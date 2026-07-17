@@ -6,6 +6,9 @@ import { getProfileArn } from "./profile"
 import { resolveContextLimit } from "./limits"
 import { tools } from "./tools"
 
+/** Internal header the chat.headers hook injects so the fetch interceptor knows the active variant. */
+const VARIANT_HEADER = "x-kiro-variant"
+
 /**
  * opencode plugin that lets you use kiro-cli''s existing AWS SSO/IdC credentials
  * as a normal opencode provider, without a separate login. opencode stores only a
@@ -15,6 +18,13 @@ import { tools } from "./tools"
 export async function KiroAuthPlugin(input: PluginInput): Promise<Hooks> {
   return {
     tool: tools,
+    "chat.headers": async (ctx, output) => {
+      if (ctx.model?.providerID !== PROVIDER_ID) return
+      const variant = (ctx.message as any)?.model?.variant
+      if (typeof variant === "string" && variant.length > 0) {
+        output.headers[VARIANT_HEADER] = variant
+      }
+    },
     auth: {
       provider: PROVIDER_ID,
       methods: [
@@ -41,8 +51,11 @@ export async function KiroAuthPlugin(input: PluginInput): Promise<Hooks> {
           const body = typeof init?.body === "string" && init.body.length > 0 ? JSON.parse(init.body) : {}
           const model = typeof body.model === "string" ? body.model : DEFAULT_MODEL
 
+          const headers = init?.headers as Record<string, string> | undefined
+          const variant = headers?.[VARIANT_HEADER]
+
           const profileArn = await getProfileArn(accessToken)
-          const request = toKiroRequest(body, accessToken, profileArn)
+          const request = toKiroRequest(body, accessToken, profileArn, variant)
           const response = await fetch(request.url, request.init)
 
           if (!response.ok) {

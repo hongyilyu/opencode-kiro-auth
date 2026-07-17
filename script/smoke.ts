@@ -148,6 +148,15 @@ const orphanHasToolUse = orphan.history.some((e: any) => e.assistantResponseMess
 const orphanHasCalledText = JSON.stringify(orphan.history).includes("[called bash")
 checks.push(["orphan tool_use degraded", !orphanHasToolUse && orphanHasCalledText])
 
+// 9) Variant -> additionalModelRequestFields mapping (Claude vs GPT vs none).
+const fields = (model: string, variant?: string) =>
+  JSON.parse(toKiroRequest({ model, messages: [{ role: "user", content: "hi" }] } as any, "t", "a", variant).init.body as string)
+    .additionalModelRequestFields
+const claudeFields = fields("claude-fable-5", "max")
+checks.push(["claude variant -> output_config.effort", claudeFields?.output_config?.effort === "max" && claudeFields?.thinking?.type === "adaptive"])
+checks.push(["gpt variant -> reasoning.effort", fields("gpt-5.6-sol", "xhigh")?.reasoning?.effort === "xhigh"])
+checks.push(["no variant -> no extra fields", fields("claude-fable-5") === undefined])
+
 let ok = true
 for (const [name, pass] of checks) {
   console.log(`${pass ? "PASS" : "FAIL"}  ${name}`)

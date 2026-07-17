@@ -22,6 +22,30 @@ type AnthropicRequest = {
   [key: string]: unknown
 }
 
+/**
+ * Build the additionalModelRequestFields for Kiro based on model + selected variant.
+ * Returns undefined when no special fields are needed (no variant selected).
+ *
+ * Claude models use:  { thinking: { type, display? }, output_config: { effort } }
+ * GPT models use:     { reasoning: { effort, mode? } }
+ */
+function buildModelRequestFields(modelId: string, variant?: string): Record<string, any> | undefined {
+  if (!variant) return undefined
+
+  if (modelId.startsWith("gpt-")) {
+    return { reasoning: { effort: variant } }
+  }
+
+  if (modelId.startsWith("claude-")) {
+    return {
+      thinking: { type: "adaptive", display: "omitted" },
+      output_config: { effort: variant },
+    }
+  }
+
+  return undefined
+}
+
 const ENV_STATE = {
   operatingSystem: process.platform === "win32" ? "windows" : process.platform === "darwin" ? "macos" : "linux",
   currentWorkingDirectory: process.cwd(),
@@ -264,6 +288,7 @@ export function toKiroRequest(
   body: AnthropicRequest,
   accessToken: string,
   profileArn: string,
+  variant?: string,
 ): { url: string; init: RequestInit } {
   const modelId = body.model || DEFAULT_MODEL
 
@@ -302,6 +327,7 @@ export function toKiroRequest(
   const current = last && last.role !== "assistant" ? last : { role: "user", content: " " }
   const currentKeepImages = keepSet.has(messages.length - 1)
 
+  const additionalModelRequestFields = buildModelRequestFields(modelId, variant)
   const payload = {
     profileArn,
     conversationState: {
@@ -312,6 +338,7 @@ export function toKiroRequest(
       agentContinuationId: randomUUID(),
       agentTaskType: "vibe",
     },
+    ...(additionalModelRequestFields ? { additionalModelRequestFields } : {}),
   }
 
   return {
