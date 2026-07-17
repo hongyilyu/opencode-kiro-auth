@@ -26,7 +26,7 @@ on every request. Requests are shaped to match kiro-cli's wire format.
 3. Add the plugin and the `provider` block to `~/.config/opencode/opencode.json`
    (see `opencode.example.jsonc`). Pick one plugin spec form:
    - npm: `"@hongyilyu/opencode-kiro-auth@latest"`
-   - Git: `"github:hongyilyu/opencode-kiro-auth-td"` (optionally `#<tag>` to pin)
+   - Git: `"github:hongyilyu/opencode-kiro-auth"` (optionally `#<tag>` to pin)
    - Local folder: `"file:///ABSOLUTE/PATH/TO/opencode-kiro-auth"`
 4. Connect: `opencode auth login` -> pick **Kiro** -> "Use existing kiro-cli login".
 5. Run: `opencode run "hello" --model kiro/claude-sonnet-4.6`

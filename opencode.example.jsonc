@@ -5,7 +5,7 @@
 
   // Load the plugin from npm. Pin a version with @<version> if you want,
   // e.g. "@hongyilyu/opencode-kiro-auth@1.1.0". Alternatives:
-  //   - GitHub: "github:hongyilyu/opencode-kiro-auth-td"
+  //   - GitHub: "github:hongyilyu/opencode-kiro-auth"
   //   - Local dev: "file:///ABSOLUTE/PATH/TO/opencode-kiro-auth"
   "plugin": ["@hongyilyu/opencode-kiro-auth@latest"],
 

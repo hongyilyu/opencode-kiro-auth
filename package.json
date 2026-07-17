@@ -13,13 +13,13 @@
   "contributors": [
     "Hongyi Lyu (fork maintainer)"
   ],
-  "homepage": "https://github.com/hongyilyu/opencode-kiro-auth-td#readme",
+  "homepage": "https://github.com/hongyilyu/opencode-kiro-auth#readme",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/hongyilyu/opencode-kiro-auth-td.git"
+    "url": "git+https://github.com/hongyilyu/opencode-kiro-auth.git"
   },
   "bugs": {
-    "url": "https://github.com/hongyilyu/opencode-kiro-auth-td/issues"
+    "url": "https://github.com/hongyilyu/opencode-kiro-auth/issues"
   },
   "keywords": [
     "opencode",
