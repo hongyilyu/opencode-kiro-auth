@@ -1,5 +1,6 @@
 // Combined regression smoke test after the release cleanup.
 import { toKiroRequest, kiroToAnthropicStream, mapKiroError } from "../src/transform"
+import { KiroAuthPlugin } from "../src/plugin"
 
 const checks: Array<[string, boolean]> = []
 const cur = (body: any) => JSON.parse(toKiroRequest(body, "t", "a").init.body as string).conversationState.currentMessage.userInputMessage
@@ -149,13 +150,34 @@ const orphanHasCalledText = JSON.stringify(orphan.history).includes("[called bas
 checks.push(["orphan tool_use degraded", !orphanHasToolUse && orphanHasCalledText])
 
 // 9) Variant -> additionalModelRequestFields mapping (Claude vs GPT vs none).
-const fields = (model: string, variant?: string) =>
-  JSON.parse(toKiroRequest({ model, messages: [{ role: "user", content: "hi" }] } as any, "t", "a", variant).init.body as string)
+const fields = (model: string, effort?: string) =>
+  JSON.parse(toKiroRequest({ model, messages: [{ role: "user", content: "hi" }] } as any, "t", "a", effort).init.body as string)
     .additionalModelRequestFields
 const claudeFields = fields("claude-fable-5", "max")
 checks.push(["claude variant -> output_config.effort", claudeFields?.output_config?.effort === "max" && claudeFields?.thinking?.type === "adaptive"])
 checks.push(["gpt variant -> reasoning.effort", fields("gpt-5.6-sol", "xhigh")?.reasoning?.effort === "xhigh"])
 checks.push(["no variant -> no extra fields", fields("claude-fable-5") === undefined])
+
+// 10) Only the exact active model may expose one of its configured variants as effort.
+const hooks = await KiroAuthPlugin({} as any)
+const effortHeader = async (activeModel: string, supported: string[], selectedModel: string, variant: string) => {
+  const output = { headers: {} as Record<string, string> }
+  await hooks["chat.headers"]!(
+    {
+      model: {
+        id: activeModel,
+        providerID: "kiro",
+        variants: Object.fromEntries(supported.map((value) => [value, {}])),
+      },
+      message: { model: { providerID: "kiro", modelID: selectedModel, variant } },
+    } as any,
+    output,
+  )
+  return output.headers["x-kiro-effort"]
+}
+checks.push(["matching model exposes effort", (await effortHeader("gpt-5.6-sol", ["max"], "gpt-5.6-sol", "max")) === "max"])
+checks.push(["auxiliary model drops effort", (await effortHeader("claude-haiku-4.5", [], "gpt-5.6-sol", "max")) === undefined])
+checks.push(["unsupported effort dropped", (await effortHeader("claude-sonnet-5", ["low"], "claude-sonnet-5", "max")) === undefined])
 
 let ok = true
 for (const [name, pass] of checks) {

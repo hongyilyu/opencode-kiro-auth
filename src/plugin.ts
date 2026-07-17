@@ -6,8 +6,22 @@ import { getProfileArn } from "./profile"
 import { resolveContextLimit } from "./limits"
 import { tools } from "./tools"
 
-/** Internal header the chat.headers hook injects so the fetch interceptor knows the active variant. */
-const VARIANT_HEADER = "x-kiro-variant"
+/** Internal header carrying a validated opencode variant to the fetch interceptor as Kiro effort. */
+const EFFORT_HEADER = "x-kiro-effort"
+
+type RuntimeModel = {
+  id: string
+  providerID: string
+  variants?: Record<string, unknown>
+}
+
+type RuntimeMessage = {
+  model: {
+    providerID: string
+    modelID: string
+    variant?: string
+  }
+}
 
 /**
  * opencode plugin that lets you use kiro-cli''s existing AWS SSO/IdC credentials
@@ -19,11 +33,14 @@ export async function KiroAuthPlugin(input: PluginInput): Promise<Hooks> {
   return {
     tool: tools,
     "chat.headers": async (ctx, output) => {
-      if (ctx.model?.providerID !== PROVIDER_ID) return
-      const variant = (ctx.message as any)?.model?.variant
-      if (typeof variant === "string" && variant.length > 0) {
-        output.headers[VARIANT_HEADER] = variant
-      }
+      const model = ctx.model as RuntimeModel
+      const selected = (ctx.message as unknown as RuntimeMessage).model
+      if (model.providerID !== PROVIDER_ID) return
+      if (selected.providerID !== model.providerID || selected.modelID !== model.id) return
+
+      const effort = selected.variant
+      if (typeof effort !== "string" || !Object.prototype.hasOwnProperty.call(model.variants ?? {}, effort)) return
+      output.headers[EFFORT_HEADER] = effort
     },
     auth: {
       provider: PROVIDER_ID,
@@ -51,11 +68,10 @@ export async function KiroAuthPlugin(input: PluginInput): Promise<Hooks> {
           const body = typeof init?.body === "string" && init.body.length > 0 ? JSON.parse(init.body) : {}
           const model = typeof body.model === "string" ? body.model : DEFAULT_MODEL
 
-          const headers = init?.headers as Record<string, string> | undefined
-          const variant = headers?.[VARIANT_HEADER]
+          const effort = new Headers(init?.headers).get(EFFORT_HEADER) ?? undefined
 
           const profileArn = await getProfileArn(accessToken)
-          const request = toKiroRequest(body, accessToken, profileArn, variant)
+          const request = toKiroRequest(body, accessToken, profileArn, effort)
           const response = await fetch(request.url, request.init)
 
           if (!response.ok) {

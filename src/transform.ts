@@ -29,17 +29,17 @@ type AnthropicRequest = {
  * Claude models use:  { thinking: { type, display? }, output_config: { effort } }
  * GPT models use:     { reasoning: { effort, mode? } }
  */
-function buildModelRequestFields(modelId: string, variant?: string): Record<string, any> | undefined {
-  if (!variant) return undefined
+function buildModelRequestFields(modelId: string, effort?: string): Record<string, any> | undefined {
+  if (!effort) return undefined
 
   if (modelId.startsWith("gpt-")) {
-    return { reasoning: { effort: variant } }
+    return { reasoning: { effort } }
   }
 
   if (modelId.startsWith("claude-")) {
     return {
       thinking: { type: "adaptive", display: "omitted" },
-      output_config: { effort: variant },
+      output_config: { effort },
     }
   }
 
@@ -288,7 +288,7 @@ export function toKiroRequest(
   body: AnthropicRequest,
   accessToken: string,
   profileArn: string,
-  variant?: string,
+  effort?: string,
 ): { url: string; init: RequestInit } {
   const modelId = body.model || DEFAULT_MODEL
 
@@ -327,7 +327,7 @@ export function toKiroRequest(
   const current = last && last.role !== "assistant" ? last : { role: "user", content: " " }
   const currentKeepImages = keepSet.has(messages.length - 1)
 
-  const additionalModelRequestFields = buildModelRequestFields(modelId, variant)
+  const additionalModelRequestFields = buildModelRequestFields(modelId, effort)
   const payload = {
     profileArn,
     conversationState: {

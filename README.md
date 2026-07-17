@@ -21,21 +21,23 @@ on every request. Requests are shaped to match kiro-cli's wire format.
 ## Setup
 
 1. Log in with kiro-cli once: `kiro-cli login`
-2. Verify the plugin can read/refresh the token (never prints it):
-   `bun run script/check-auth.ts`
-3. Add the plugin and the `provider` block to `~/.config/opencode/opencode.json`
+2. Add the plugin and the `provider` block to `~/.config/opencode/opencode.json`
    (see `opencode.example.jsonc`). Pick one plugin spec form:
    - npm: `"@hongyilyu/opencode-kiro-auth@latest"`
    - Git: `"github:hongyilyu/opencode-kiro-auth"` (optionally `#<tag>` to pin)
    - Local folder: `"file:///ABSOLUTE/PATH/TO/opencode-kiro-auth"`
-4. Connect: `opencode auth login` -> pick **Kiro** -> "Use existing kiro-cli login".
-5. Run: `opencode run "hello" --model kiro/claude-sonnet-4.6`
+3. Connect: `opencode auth login` -> pick **Kiro** -> "Use existing kiro-cli login".
+4. Run: `opencode run "hello" --model kiro/claude-sonnet-4.6`
+
+When working from a source checkout, optional diagnostics are available:
+`bun run check-auth` verifies token access, and `bun run list-models` dumps the live
+model catalog. Neither command is needed when using the plugin from npm.
 
 ## Models and effort
 
-Model ids must match Kiro's `ListAvailableModels` exactly (dump the live catalog for
-your account with `bun run list-models`). Recent additions include `claude-fable-5`,
-`claude-sonnet-5`, and `gpt-5.6-sol` / `gpt-5.6-terra` / `gpt-5.6-luna`.
+Model ids must match Kiro's `ListAvailableModels` exactly. Recent additions include
+`claude-fable-5`, `claude-sonnet-5`, and `gpt-5.6-sol` / `gpt-5.6-terra` /
+`gpt-5.6-luna`.
 
 Effort is selected through opencode's variant picker (or `--variant <level>`). The
 plugin forwards the chosen variant name to Kiro's `additionalModelRequestFields`:

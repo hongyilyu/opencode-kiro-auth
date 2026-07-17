@@ -3,7 +3,7 @@
   "configVersion": 1,
   "workspaces": {
     "": {
-      "name": "opencode-kiro-auth",
+      "name": "@hongyilyu/opencode-kiro-auth",
       "peerDependencies": {
         "@opencode-ai/plugin": "*",
       },
