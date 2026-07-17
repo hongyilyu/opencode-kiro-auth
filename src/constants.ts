@@ -9,11 +9,8 @@ export const DEFAULT_MODEL = "claude-sonnet-4.6"
 
 /** kiro-cli's AWS SSO token cache. auth.ts throws if missing (run `kiro-cli login`). */
 export const SSO_CACHE_DIR = join(homedir(), ".aws", "sso", "cache")
-/** kiro-cli >= 2.13 writes kiro-auth-token-cli.json; older versions used kiro-auth-token.json. */
-export const TOKEN_FILES = [
-  join(SSO_CACHE_DIR, "kiro-auth-token-cli.json"),
-  join(SSO_CACHE_DIR, "kiro-auth-token.json"),
-]
+/** Current kiro-cli writes this file. If a build ever uses a different name, re-run `kiro-cli login`. */
+export const TOKEN_FILE = join(SSO_CACHE_DIR, "kiro-auth-token-cli.json")
 
 /** Refresh the access token this long before it expires. */
 export const EXPIRY_SKEW_MS = 5 * 60 * 1000
