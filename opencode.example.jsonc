@@ -17,13 +17,77 @@
       "options": { "baseURL": "https://kiro.local" },
 
       // limits/modalities mirror Kiro's ListAvailableModels. `variants` are the
-      // effort levels Kiro exposes per model; they appear in opencode's variant
-      // picker as labels and carry no request options, so the request is unchanged.
+      // effort levels Kiro exposes per model; the plugin maps the selected variant
+      // name to Kiro's additionalModelRequestFields (output_config.effort for Claude,
+      // reasoning.effort for GPT), so the values can stay empty here.
       "models": {
         "auto": {
           "name": "Auto",
           "limit": { "context": 1000000, "output": 64000 },
           "modalities": { "input": ["text", "image"], "output": ["text"] },
+        },
+        "claude-fable-5": {
+          "name": "Claude Fable 5",
+          "limit": { "context": 1000000, "output": 128000 },
+          "modalities": { "input": ["text", "image"], "output": ["text"] },
+          "variants": {
+            "low": {},
+            "medium": {},
+            "high": {},
+            "xhigh": {},
+            "max": {},
+          },
+        },
+        "claude-sonnet-5": {
+          "name": "Claude Sonnet 5",
+          "limit": { "context": 1000000, "output": 64000 },
+          "modalities": { "input": ["text", "image"], "output": ["text"] },
+          "variants": {
+            "low": {},
+            "medium": {},
+            "high": {},
+            "xhigh": {},
+            "max": {},
+          },
+        },
+        "gpt-5.6-sol": {
+          "name": "GPT 5.6 Sol",
+          "limit": { "context": 272000, "output": 128000 },
+          "modalities": { "input": ["text", "image"], "output": ["text"] },
+          "variants": {
+            "none": {},
+            "low": {},
+            "medium": {},
+            "high": {},
+            "xhigh": {},
+            "max": {},
+          },
+        },
+        "gpt-5.6-terra": {
+          "name": "GPT 5.6 Terra",
+          "limit": { "context": 272000, "output": 128000 },
+          "modalities": { "input": ["text", "image"], "output": ["text"] },
+          "variants": {
+            "none": {},
+            "low": {},
+            "medium": {},
+            "high": {},
+            "xhigh": {},
+            "max": {},
+          },
+        },
+        "gpt-5.6-luna": {
+          "name": "GPT 5.6 Luna",
+          "limit": { "context": 272000, "output": 128000 },
+          "modalities": { "input": ["text", "image"], "output": ["text"] },
+          "variants": {
+            "none": {},
+            "low": {},
+            "medium": {},
+            "high": {},
+            "xhigh": {},
+            "max": {},
+          },
         },
         "claude-opus-4.8": {
           "name": "Claude Opus 4.8",
