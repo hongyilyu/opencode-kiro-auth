@@ -3,10 +3,11 @@
   // (~ resolves to your home directory on all OSes, including Windows.)
   "$schema": "https://opencode.ai/config.json",
 
-  // Load the plugin straight from GitHub. Pin a release with #<tag> if you want,
-  // e.g. "github:toandev95/opencode-kiro-auth#v1.0.0". For local dev, swap this for
-  // an absolute file:// URL, e.g. "file:///ABSOLUTE/PATH/TO/opencode-kiro-auth".
-  "plugin": ["github:toandev95/opencode-kiro-auth"],
+  // Load the plugin from npm. Pin a version with @<version> if you want,
+  // e.g. "@hongyilyu/opencode-kiro-auth@1.1.0". Alternatives:
+  //   - GitHub: "github:hongyilyu/opencode-kiro-auth-td"
+  //   - Local dev: "file:///ABSOLUTE/PATH/TO/opencode-kiro-auth"
+  "plugin": ["@hongyilyu/opencode-kiro-auth@latest"],
 
   "provider": {
     "kiro": {

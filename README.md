@@ -1,14 +1,22 @@
-# opencode-kiro-auth
+# @hongyilyu/opencode-kiro-auth
+
+> **Fork.** This is a fork of [toandev95/opencode-kiro-auth](https://github.com/toandev95/opencode-kiro-auth)
+> by Toan Doan, published to npm because the upstream repo has fork pull requests
+> disabled. It adds Claude Fable 5 / Sonnet 5 and the GPT 5.6 models, wires opencode
+> effort variants through to Kiro's `additionalModelRequestFields`, and supports the
+> kiro-cli >= 2.13 token cache (`kiro-auth-token-cli.json`). All upstream credit remains
+> with the original author.
 
 > **Disclaimer — use at your own risk.** This is an unofficial tool, not affiliated
 > with Kiro/Amazon/AWS. Using a Kiro subscription outside its official client may
-> violate the provider''s Terms of Service and **could get your account suspended or
+> violate the provider's Terms of Service and **could get your account suspended or
 > banned**. It is intended for personal, local use only. You assume all risk.
 
 Use the credentials `kiro-cli` already stored (AWS SSO / Builder ID) as an opencode
 provider. No separate login: opencode keeps only a sentinel marker, and the real
-bearer token is read and refreshed live from `~/.aws/sso/cache/kiro-auth-token.json`
-on every request. Requests are shaped to match kiro-cli''s wire format.
+bearer token is read and refreshed live from kiro-cli's own SSO cache
+(`~/.aws/sso/cache/kiro-auth-token-cli.json`, or the legacy `kiro-auth-token.json`)
+on every request. Requests are shaped to match kiro-cli's wire format.
 
 ## Setup
 
@@ -17,11 +25,22 @@ on every request. Requests are shaped to match kiro-cli''s wire format.
    `bun run script/check-auth.ts`
 3. Add the plugin and the `provider` block to `~/.config/opencode/opencode.json`
    (see `opencode.example.jsonc`). Pick one plugin spec form:
+   - npm: `"@hongyilyu/opencode-kiro-auth@latest"`
+   - Git: `"github:hongyilyu/opencode-kiro-auth-td"` (optionally `#<tag>` to pin)
    - Local folder: `"file:///ABSOLUTE/PATH/TO/opencode-kiro-auth"`
-   - Git: `"github:<user>/opencode-kiro-auth"` (optionally `#<tag>` to pin)
-   - npm (if published): `"opencode-kiro-auth@latest"`
 4. Connect: `opencode auth login` -> pick **Kiro** -> "Use existing kiro-cli login".
 5. Run: `opencode run "hello" --model kiro/claude-sonnet-4.6`
+
+## Models and effort
+
+Model ids must match Kiro's `ListAvailableModels` exactly (dump the live catalog for
+your account with `bun run list-models`). Recent additions include `claude-fable-5`,
+`claude-sonnet-5`, and `gpt-5.6-sol` / `gpt-5.6-terra` / `gpt-5.6-luna`.
+
+Effort is selected through opencode's variant picker (or `--variant <level>`). The
+plugin forwards the chosen variant name to Kiro's `additionalModelRequestFields`:
+`output_config.effort` for Claude models, `reasoning.effort` for GPT models. Models
+without a variant selected send no effort field, leaving behavior unchanged.
 
 ## How it works
 
@@ -61,6 +80,9 @@ so it needs no third-party search API key.
 Verify it end to end (uses your live login, prints no token):
 `bun run script/test-websearch.ts "latest Node.js LTS version"`
 
-## Author
+## Credits
 
-Toan Doan <toandev.95@gmail.com>
+Original author: Toan Doan <toandev.95@gmail.com>
+([toandev95/opencode-kiro-auth](https://github.com/toandev95/opencode-kiro-auth)).
+
+Fork maintainer: Hongyi Lyu.
