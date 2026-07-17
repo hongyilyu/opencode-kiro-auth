@@ -1,6 +1,6 @@
 import { readFile, writeFile } from "node:fs/promises"
 import { join } from "node:path"
-import { SSO_CACHE_DIR, TOKEN_FILE, EXPIRY_SKEW_MS } from "./constants"
+import { SSO_CACHE_DIR, TOKEN_FILES, EXPIRY_SKEW_MS } from "./constants"
 
 export type KiroToken = {
   accessToken: string
@@ -21,17 +21,19 @@ type ClientRegistration = {
 export class KiroAuthError extends Error {}
 
 /** Read the token cache that kiro-cli maintains. Throws if kiro-cli is not logged in. */
-export async function readToken(): Promise<KiroToken> {
-  const raw = await readFile(TOKEN_FILE, "utf8").catch(() => {
-    throw new KiroAuthError(
-      `kiro-cli token not found at ${TOKEN_FILE}. Run \`kiro-cli login\` (or \`kiro login\`) first.`,
-    )
-  })
-  const token = JSON.parse(raw) as KiroToken
-  if (!token.accessToken || !token.refreshToken) {
-    throw new KiroAuthError("kiro-cli token cache is missing accessToken/refreshToken.")
+export async function readToken(): Promise<KiroToken & { file: string }> {
+  for (const file of TOKEN_FILES) {
+    const raw = await readFile(file, "utf8").catch(() => null)
+    if (raw === null) continue
+    const token = JSON.parse(raw) as KiroToken
+    if (!token.accessToken || !token.refreshToken) {
+      throw new KiroAuthError(`kiro-cli token cache at ${file} is missing accessToken/refreshToken.`)
+    }
+    return { ...token, file }
   }
-  return token
+  throw new KiroAuthError(
+    `kiro-cli token not found (looked for ${TOKEN_FILES.join(", ")}). Run \`kiro-cli login\` (or \`kiro login\`) first.`,
+  )
 }
 
 function isExpired(token: KiroToken): boolean {
@@ -52,7 +54,7 @@ export async function getValidAccessToken(): Promise<string> {
   return refreshed.accessToken
 }
 
-async function refresh(token: KiroToken): Promise<KiroToken> {
+async function refresh(token: KiroToken & { file: string }): Promise<KiroToken> {
   const region = token.region ?? "us-east-1"
   const client = await readClientRegistration(token.clientIdHash)
 
@@ -78,14 +80,15 @@ async function refresh(token: KiroToken): Promise<KiroToken> {
     expiresIn: number
   }
 
+  const { file, ...rest } = token
   const next: KiroToken = {
-    ...token,
+    ...rest,
     accessToken: body.accessToken,
     refreshToken: body.refreshToken ?? token.refreshToken,
     expiresAt: new Date(Date.now() + body.expiresIn * 1000).toISOString(),
   }
 
-  await writeFile(TOKEN_FILE, JSON.stringify(next, null, 2), "utf8").catch(() => {
+  await writeFile(file, JSON.stringify(next, null, 2), "utf8").catch(() => {
     // Non-fatal: we still return a working token even if we cannot persist it.
   })
   return next

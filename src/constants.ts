@@ -9,7 +9,11 @@ export const DEFAULT_MODEL = "claude-sonnet-4.6"
 
 /** kiro-cli's AWS SSO token cache. auth.ts throws if missing (run `kiro-cli login`). */
 export const SSO_CACHE_DIR = join(homedir(), ".aws", "sso", "cache")
-export const TOKEN_FILE = join(SSO_CACHE_DIR, "kiro-auth-token.json")
+/** kiro-cli >= 2.13 writes kiro-auth-token-cli.json; older versions used kiro-auth-token.json. */
+export const TOKEN_FILES = [
+  join(SSO_CACHE_DIR, "kiro-auth-token-cli.json"),
+  join(SSO_CACHE_DIR, "kiro-auth-token.json"),
+]
 
 /** Refresh the access token this long before it expires. */
 export const EXPIRY_SKEW_MS = 5 * 60 * 1000
@@ -32,8 +36,8 @@ export const KIRO_ORIGIN = "KIRO_CLI"
 export const KIRO_PROFILE_ARN_PLACEHOLDER = "arn:aws:codewhisperer:us-east-1:638616132270:profile/AAAACCCCXXXX"
 
 /** User-Agent matching kiro-cli. Bump KIRO_CLI_VERSION to match `kiro-cli --version`. */
-const KIRO_CLI_VERSION = "2.6.1"
-const KIRO_SDK_API_VERSION = "0.1.16551"
+const KIRO_CLI_VERSION = "2.13.0"
+const KIRO_SDK_API_VERSION = "0.1.17975"
 const KIRO_OS = platform() === "win32" ? "windows" : platform() === "darwin" ? "macos" : "linux"
 const ua = (api: string, metric: string) =>
   `aws-sdk-rust/1.3.15 ua/2.1 api/${api}/${KIRO_SDK_API_VERSION} os/${KIRO_OS} lang/rust/1.92.0 ${metric} app/AmazonQ-For-CLI`
