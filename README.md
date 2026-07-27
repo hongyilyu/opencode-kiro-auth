@@ -2,9 +2,9 @@
 
 > **Fork.** This is a fork of [toandev95/opencode-kiro-auth](https://github.com/toandev95/opencode-kiro-auth)
 > by Toan Doan, published to npm because the upstream repo has fork pull requests
-> disabled. It adds Claude Fable 5 / Sonnet 5 and the GPT 5.6 models, wires opencode
-> effort variants through to Kiro's `additionalModelRequestFields`, and supports the
-> kiro-cli >= 2.13 token cache (`kiro-auth-token-cli.json`). All upstream credit remains
+> disabled. It adds Claude Opus 5 / Fable 5 / Sonnet 5 and the GPT 5.6 models, wires
+> opencode effort variants through to Kiro's `additionalModelRequestFields`, and supports
+> the kiro-cli >= 2.13 token cache (`kiro-auth-token-cli.json`). All upstream credit remains
 > with the original author.
 
 > **Disclaimer — use at your own risk.** This is an unofficial tool, not affiliated
@@ -36,8 +36,8 @@ model catalog. Neither command is needed when using the plugin from npm.
 ## Models and effort
 
 Model ids must match Kiro's `ListAvailableModels` exactly. Recent additions include
-`claude-fable-5`, `claude-sonnet-5`, and `gpt-5.6-sol` / `gpt-5.6-terra` /
-`gpt-5.6-luna`.
+`claude-opus-5`, `claude-fable-5`, `claude-sonnet-5`, and `gpt-5.6-sol` /
+`gpt-5.6-terra` / `gpt-5.6-luna`.
 
 Effort is selected through opencode's variant picker (or `--variant <level>`). The
 plugin forwards the chosen variant name to Kiro's `additionalModelRequestFields`:

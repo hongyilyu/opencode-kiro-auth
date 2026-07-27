@@ -27,6 +27,18 @@
           "limit": { "context": 1000000, "output": 64000 },
           "modalities": { "input": ["text", "image"], "output": ["text"] },
         },
+        "claude-opus-5": {
+          "name": "Claude Opus 5",
+          "limit": { "context": 1000000, "output": 128000 },
+          "modalities": { "input": ["text", "image"], "output": ["text"] },
+          "variants": {
+            "low": {},
+            "medium": {},
+            "high": {},
+            "xhigh": {},
+            "max": {},
+          },
+        },
         "claude-fable-5": {
           "name": "Claude Fable 5",
           "limit": { "context": 1000000, "output": 128000 },
