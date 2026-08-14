@@ -6,7 +6,6 @@ import {
   KIRO_USER_AGENT,
   KIRO_X_AMZ_USER_AGENT,
 } from "./constants"
-import { getValidAccessToken } from "./auth"
 import { getProfileArn } from "./profile"
 
 /**
@@ -48,9 +47,15 @@ export type WebSearchResult = {
 
 export class KiroMcpError extends Error {}
 
+export type AccessTokenProvider = () => Promise<string>
+
 /** Low-level JSON-RPC call against Kiro's built-in MCP server. */
-export async function invokeMcp(method: string, params?: unknown): Promise<JsonRpcResult> {
-  const accessToken = await getValidAccessToken()
+export async function invokeMcp(
+  getAccessToken: AccessTokenProvider,
+  method: string,
+  params?: unknown,
+): Promise<JsonRpcResult> {
+  const accessToken = await getAccessToken()
   const profileArn = await getProfileArn(accessToken)
 
   const body: Record<string, unknown> = { profileArn, jsonrpc: "2.0", id: "1", method }
@@ -96,10 +101,13 @@ function firstText(result: JsonRpcResult): string {
 }
 
 /** Run a web search via Kiro's built-in MCP `web_search` tool. */
-export async function webSearch(query: string): Promise<WebSearchResult[]> {
+export async function webSearch(
+  getAccessToken: AccessTokenProvider,
+  query: string,
+): Promise<WebSearchResult[]> {
   // The backend rejects queries longer than 200 characters.
   const trimmed = query.length > 200 ? query.slice(0, 200) : query
-  const result = await invokeMcp("tools/call", {
+  const result = await invokeMcp(getAccessToken, "tools/call", {
     name: "web_search",
     arguments: { query: trimmed },
   })

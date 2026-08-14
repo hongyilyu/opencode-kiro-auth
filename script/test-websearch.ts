@@ -1,12 +1,10 @@
-// Run: bun run script/test-websearch.ts
-// End-to-end check of the implemented web_search module against the live Kiro backend.
-import { webSearch } from "../src/mcp"
+// End-to-end check of web_search through the configured OpenCode provider.
+import { runOpenCode } from "./opencode"
 
-const query = process.argv[2] ?? "latest Node.js LTS version 2026"
-console.log("query:", query)
-const results = await webSearch(query)
-console.log("result count:", results.length)
-for (const r of results.slice(0, 5)) {
-  console.log("-", r.title, "=>", r.url)
-}
-if (!results.length) process.exit(1)
+const query = process.argv[2] ?? "latest Node.js LTS version"
+await runOpenCode([
+  "run",
+  `Use web_search to answer this query with one cited result: ${query}`,
+  "--model",
+  "kiro/claude-sonnet-4.6",
+])

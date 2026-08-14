@@ -1,13 +1,10 @@
-// Run: bun run script/check-auth.ts
-// Verifies the plugin can read + refresh kiro-cli credentials. Never prints the token.
-import { readToken, getValidAccessToken } from "../src/auth"
+// Verifies the OpenCode-owned Kiro credential end to end. Never reads or prints tokens.
+import { runOpenCode } from "./opencode"
 
-const token = await readToken()
-console.log("kiro-cli token found:")
-console.log("  provider   :", token.provider)
-console.log("  region     :", token.region)
-console.log("  authMethod :", token.authMethod)
-console.log("  expiresAt  :", token.expiresAt)
-
-const access = await getValidAccessToken()
-console.log("access token usable: yes (length=" + access.length + ")")
+const model = process.argv[2] ?? "claude-sonnet-4.6"
+await runOpenCode([
+  "run",
+  "Reply with exactly: ok",
+  "--model",
+  `kiro/${model}`,
+])

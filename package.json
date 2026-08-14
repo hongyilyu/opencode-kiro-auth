@@ -1,7 +1,7 @@
 {
   "name": "@hongyilyu/opencode-kiro-auth",
-  "version": "1.2.0",
-  "description": "Use your existing kiro-cli (AWS SSO/IdC) credentials as an opencode provider. No separate login. Fork adding Claude Opus 5 / Fable 5 / Sonnet 5, GPT 5.6 models, effort variants, and kiro-cli 2.13 token-cache support.",
+  "version": "2.0.0",
+  "description": "Use Kiro models in opencode with direct AWS Builder ID or IAM Identity Center OAuth. Includes Claude 5, GPT 5.6, effort variants, and built-in web search.",
   "type": "module",
   "main": "./index.ts",
   "exports": {
@@ -43,7 +43,7 @@
     "LICENSE"
   ],
   "scripts": {
-    "smoke": "bun run script/smoke.ts",
+    "smoke": "bun run script/smoke.ts && bun run script/auth-smoke.ts",
     "check-auth": "bun run script/check-auth.ts",
     "list-models": "bun run script/list-models.ts",
     "test-model": "bun run script/test-model.ts"
