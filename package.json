@@ -1,6 +1,6 @@
 {
   "name": "@hongyilyu/opencode-kiro-auth",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "Use your existing kiro-cli (AWS SSO/IdC) credentials as an opencode provider. No separate login. Fork adding Claude Opus 5 / Fable 5 / Sonnet 5, GPT 5.6 models, effort variants, and kiro-cli 2.13 token-cache support.",
   "type": "module",
   "main": "./index.ts",
