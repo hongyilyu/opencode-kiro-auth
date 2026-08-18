@@ -1,5 +1,5 @@
 // Combined regression smoke test after the release cleanup.
-import { toKiroRequest, kiroToAnthropicStream, mapKiroError } from "../src/transform"
+import { toKiroRequest, kiroToAnthropicStream, mapKiroError, preflightKiroResponse } from "../src/transform"
 import { KiroAuthPlugin } from "../src/plugin"
 
 const checks: Array<[string, boolean]> = []
@@ -64,26 +64,72 @@ const allImgs = [...payload.conversationState.history, payload.conversationState
 checks.push(["drops oldest image", !allImgs.includes("OLD") && allImgs.includes("MID") && allImgs.includes("NEW")])
 
 // 5) Usage from context percentage.
-function frame(eventType: string, p: unknown): Buffer {
-  const b = Buffer.from(JSON.stringify(p)); const name = Buffer.from(":event-type"); const v = Buffer.from(eventType)
+function frame(eventType: string, p: unknown, headerName = ":event-type"): Buffer {
+  const b = Buffer.from(JSON.stringify(p)); const name = Buffer.from(headerName); const v = Buffer.from(eventType)
   const vl = Buffer.alloc(2); vl.writeUInt16BE(v.length)
   const h = Buffer.concat([Buffer.from([name.length]), name, Buffer.from([7]), vl, v])
   const total = 12 + h.length + b.length + 4; const buf = Buffer.alloc(total); let o = 0
   buf.writeUInt32BE(total, o); o += 4; buf.writeUInt32BE(h.length, o); o += 4; buf.writeUInt32BE(0, o); o += 4
   h.copy(buf, o); o += h.length; b.copy(buf, o); o += b.length; buf.writeUInt32BE(0, o); return buf
 }
-const stream = Buffer.concat([frame("assistantResponseEvent", { content: "hello" }), frame("contextUsageEvent", { contextUsagePercentage: 5 })])
-const out = await kiroToAnthropicStream(new Response(new Uint8Array(stream)), "claude-sonnet-4.6", 1_000_000).text()
+function chunkedResponse(...chunks: Uint8Array[]): Response {
+  return new Response(
+    new ReadableStream<Uint8Array>({
+      start(controller) {
+        for (const chunk of chunks) controller.enqueue(chunk)
+        controller.close()
+      },
+    }),
+  )
+}
+const successfulResponse = chunkedResponse(
+  frame("assistantResponseEvent", { content: "hello" }),
+  frame("contextUsageEvent", { contextUsagePercentage: 5 }),
+)
+const preparedResponse = await preflightKiroResponse(successfulResponse)
+checks.push(["successful stream preflight", preparedResponse.status === 200])
+const out = await kiroToAnthropicStream(preparedResponse, "claude-sonnet-4.6", 1_000_000).text()
 const delta = out.split("\n").find((l) => l.startsWith("data:") && l.includes("message_delta"))
 const usage = delta ? JSON.parse(delta.slice(5)).usage : null
 checks.push(["usage input tokens", usage?.input_tokens === 50_000])
 
-// 6) Error mapping -> context overflow phrase.
+// 6) In-band throttling -> HTTP 429 so opencode's outer retry loop sees it.
+const originalRetrySeconds = process.env.KIRO_RATE_LIMIT_RETRY_SECONDS
+delete process.env.KIRO_RATE_LIMIT_RETRY_SECONDS
+const throttledFrame = frame("ThrottlingException", { message: "Rate exceeded", retryAfterSeconds: 3 }, ":exception-type")
+const throttledResponse = chunkedResponse(
+  throttledFrame.subarray(0, 9),
+  throttledFrame.subarray(9),
+)
+const mappedStreamError = await preflightKiroResponse(throttledResponse)
+const mappedStreamBody = await mappedStreamError.json() as any
+checks.push([
+  "stream throttle mapping",
+  mappedStreamError.status === 429 &&
+    mappedStreamError.headers.get("retry-after") === "3" &&
+    mappedStreamBody?.error?.type === "rate_limit_error",
+])
+const noDelayResponse = await preflightKiroResponse(
+  chunkedResponse(frame("TooManyRequestsException", { message: "Slow down" }, ":exception-type")),
+)
+checks.push(["default retry backoff preserved", noDelayResponse.headers.get("retry-after") === null])
+process.env.KIRO_RATE_LIMIT_RETRY_SECONDS = "10"
+const fixedDelayResponse = await preflightKiroResponse(
+  chunkedResponse(frame("TooManyRequestsException", { message: "Slow down" }, ":exception-type")),
+)
+checks.push([
+  "configured fixed retry delay",
+  fixedDelayResponse.status === 429 && fixedDelayResponse.headers.get("retry-after") === "10",
+])
+if (originalRetrySeconds === undefined) delete process.env.KIRO_RATE_LIMIT_RETRY_SECONDS
+else process.env.KIRO_RATE_LIMIT_RETRY_SECONDS = originalRetrySeconds
+
+// 7) HTTP error mapping -> context overflow phrase.
 const mapped = mapKiroError(JSON.stringify({ reason: "CONTENT_LENGTH_EXCEEDS_THRESHOLD", message: "Input content length exceeds threshold." }), 400)
 checks.push(["overflow mapping", mapped.status === 400 && mapped.body.toLowerCase().includes("prompt is too long")])
 checks.push(["passthrough", mapKiroError("boom", 500).body === "boom"])
 
-// 7) Mixed tool_result + text turn WITH tools present: inline result, unpair tool_use.
+// 8) Mixed tool_result + text turn WITH tools present: inline result, unpair tool_use.
 const mixed = JSON.parse(
   toKiroRequest(
     {

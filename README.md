@@ -67,9 +67,19 @@ without a variant selected send no effort field, leaving behavior unchanged.
   have one, else the fixed Builder-ID placeholder.
 - `transform.ts` maps the Anthropic Messages request opencode sends into Kiro's
   CodeWhisperer `GenerateAssistantResponse` request (text, tool calls, images), and
-  converts the AWS event-stream response back into an Anthropic SSE stream.
+  converts the AWS event-stream response back into an Anthropic SSE stream. Pre-output
+  throttling exceptions are promoted to HTTP 429 responses so opencode keeps retrying.
 - `plugin.ts` registers the opencode `auth` hook whose loader returns the
   intercepting `fetch`.
+
+## Environment variables
+
+| Variable | Default | Description |
+| --- | --- | --- |
+| `KIRO_RATE_LIMIT_RETRY_SECONDS` | Unset | Positive integer that overrides the retry interval for HTTP 429 and pre-output throttling responses. When unset or invalid, upstream `Retry-After` values and opencode's normal backoff are preserved. |
+| `KIRO_KEEP_IMAGE_TURNS` | `2` | Number of recent image-bearing turns retained in requests. Set to `0` to strip all images. |
+
+Example: `KIRO_RATE_LIMIT_RETRY_SECONDS=10 opencode`.
 
 ## Large images and long sessions
 
