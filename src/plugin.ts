@@ -1,5 +1,5 @@
 import type { Hooks, PluginInput } from "@opencode-ai/plugin"
-import { PROVIDER_ID, DEFAULT_MODEL } from "./constants"
+import { PROVIDER_ID, DEFAULT_MODEL, resolveRateLimitRetryAfter } from "./constants"
 import {
   beginDeviceAuthorization,
   completeDeviceAuthorization,
@@ -11,7 +11,7 @@ import {
   type OAuthCredential,
   type PendingDeviceAuthorization,
 } from "./auth"
-import { toKiroRequest, kiroToAnthropicStream, mapKiroError } from "./transform"
+import { toKiroRequest, kiroToAnthropicStream, mapKiroError, preflightKiroResponse } from "./transform"
 import { getProfileArn } from "./profile"
 import { resolveContextLimit } from "./limits"
 import { createTools } from "./tools"
@@ -126,16 +126,25 @@ export async function KiroAuthPlugin(input: PluginInput): Promise<Hooks> {
               // message; opencode persists the raw body in its session store for anything else.
               const detail = await response.text().catch(() => "")
               const mapped = mapKiroError(detail, response.status)
+              const headers = new Headers({ "content-type": "application/json" })
+              const retryAfter =
+                mapped.status === 429
+                  ? resolveRateLimitRetryAfter(response.headers.get("retry-after"))
+                  : response.headers.get("retry-after")
+              if (retryAfter) headers.set("retry-after", retryAfter)
               return new Response(mapped.body, {
                 status: mapped.status,
-                headers: { "content-type": "application/json" },
+                headers,
               })
             }
+
+            const streamResponse = await preflightKiroResponse(response)
+            if (!streamResponse.ok) return streamResponse
 
             // Context window is read from the live opencode config so the synthesized usage
             // percentage matches what opencode shows.
             const contextLimit = await resolveContextLimit(input.client, PROVIDER_ID, model)
-            return kiroToAnthropicStream(response, model, contextLimit)
+            return kiroToAnthropicStream(streamResponse, model, contextLimit)
           },
         }
       },

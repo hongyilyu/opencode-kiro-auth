@@ -30,7 +30,7 @@ function parseHeaders(buf: Buffer, start: number, end: number): Record<string, s
 }
 
 /** Decode complete frames present in `buf`; returns parsed events and any trailing bytes. */
-function drain(buf: Buffer): { events: KiroEvent[]; rest: Buffer } {
+export function drainKiroEvents(buf: Buffer): { events: KiroEvent[]; rest: Buffer } {
   const events: KiroEvent[] = []
   let off = 0
   while (off + 12 <= buf.length) {
@@ -60,12 +60,22 @@ export async function* readKiroEvents(res: Response): AsyncGenerator<KiroEvent> 
   if (!res.body) return
   const reader = res.body.getReader()
   let buf = Buffer.alloc(0)
-  while (true) {
-    const { done, value } = await reader.read()
-    if (done) break
-    buf = Buffer.concat([buf, Buffer.from(value)])
-    const { events, rest } = drain(buf)
-    buf = rest
-    for (const event of events) yield event
+  let complete = false
+  try {
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) {
+        complete = true
+        break
+      }
+      buf = Buffer.concat([buf, Buffer.from(value)])
+      const { events, rest } = drainKiroEvents(buf)
+      buf = rest
+      for (const event of events) yield event
+    }
+  } finally {
+    // Consumers may stop after an error event; release the upstream body promptly.
+    if (!complete) void reader.cancel().catch(() => {})
+    reader.releaseLock()
   }
 }

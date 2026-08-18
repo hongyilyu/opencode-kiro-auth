@@ -7,8 +7,9 @@ import {
   KIRO_ORIGIN,
   KIRO_USER_AGENT,
   KIRO_X_AMZ_USER_AGENT,
+  resolveRateLimitRetryAfter,
 } from "./constants"
-import { readKiroEvents } from "./eventstream"
+import { drainKiroEvents, readKiroEvents, type KiroEvent } from "./eventstream"
 
 /* ----------------------------- request mapping ----------------------------- */
 
@@ -364,6 +365,157 @@ export function toKiroRequest(
 
 function sse(event: string, data: unknown): string {
   return `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`
+}
+
+function isKiroStreamError(event: KiroEvent): boolean {
+  const type = event.eventType.toLowerCase()
+  return type === "error" || type.includes("exception")
+}
+
+function isKiroRateLimitError(event: KiroEvent): boolean {
+  if (!isKiroStreamError(event)) return false
+  const detail = `${event.eventType} ${JSON.stringify(event.payload)}`.toLowerCase()
+  return (
+    detail.includes("throttl") ||
+    detail.includes("toomanyrequests") ||
+    detail.includes("too many requests") ||
+    /rate[\s_-]*limit/.test(detail) ||
+    /\brate(?:[\s_-]+limit)?[\s_-]+exceeded\b/.test(detail) ||
+    /"(?:status|statuscode|httpstatuscode)"\s*:\s*429\b/.test(detail)
+  )
+}
+
+function kiroStreamErrorMessage(event: KiroEvent): string {
+  const payload = event.payload as { message?: unknown; Message?: unknown; errorMessage?: unknown }
+  const message = [payload.message, payload.Message, payload.errorMessage].find((value) => typeof value === "string")
+  return typeof message === "string" && message.length > 0 ? message : JSON.stringify(event.payload) || event.eventType
+}
+
+function kiroRetryAfter(res: Response, event: KiroEvent): string | undefined {
+  const header = res.headers.get("retry-after")
+  if (header) return resolveRateLimitRetryAfter(header)
+  const payload = event.payload as { retryAfter?: unknown; retryAfterSeconds?: unknown }
+  const value = payload.retryAfterSeconds ?? payload.retryAfter
+  let upstream: string | undefined
+  if (typeof value === "number" && Number.isFinite(value) && value >= 0) upstream = String(value)
+  if (typeof value === "string" && /^\d+(?:\.\d+)?$/.test(value)) upstream = value
+  return resolveRateLimitRetryAfter(upstream)
+}
+
+function replayKiroResponse(
+  res: Response,
+  prefix: Uint8Array[],
+  reader?: ReadableStreamDefaultReader<Uint8Array>,
+): Response {
+  let index = 0
+  let released = false
+  const release = () => {
+    if (reader && !released) {
+      released = true
+      reader.releaseLock()
+    }
+  }
+  const body = new ReadableStream<Uint8Array>({
+    async pull(controller) {
+      if (index < prefix.length) {
+        controller.enqueue(prefix[index++])
+        return
+      }
+      if (!reader) {
+        controller.close()
+        return
+      }
+      try {
+        const next = await reader.read()
+        if (next.done) {
+          release()
+          controller.close()
+          return
+        }
+        controller.enqueue(next.value)
+      } catch (error) {
+        release()
+        controller.error(error)
+      }
+    },
+    async cancel(reason) {
+      if (!reader) return
+      try {
+        await reader.cancel(reason)
+      } finally {
+        release()
+      }
+    },
+  })
+  return new Response(body, {
+    status: res.status,
+    statusText: res.statusText,
+    headers: res.headers,
+  })
+}
+
+function rateLimitResponse(res: Response, event: KiroEvent): Response {
+  const headers = new Headers({ "content-type": "application/json" })
+  const retryAfter = kiroRetryAfter(res, event)
+  if (retryAfter) headers.set("retry-after", retryAfter)
+  return new Response(
+    JSON.stringify({
+      type: "error",
+      error: { type: "rate_limit_error", message: kiroStreamErrorMessage(event) },
+    }),
+    { status: 429, headers },
+  )
+}
+
+/**
+ * Kiro can return HTTP 200 and put throttling in the AWS event stream. Read only
+ * through the first output/error event, replaying the exact prefix for successful
+ * responses. A pre-output throttle becomes the HTTP 429 opencode already retries.
+ */
+export async function preflightKiroResponse(res: Response): Promise<Response> {
+  if (!res.body) return res
+  const reader = res.body.getReader()
+  const prefix: Uint8Array[] = []
+  let buf = Buffer.alloc(0)
+  let readerOwned = true
+  try {
+    while (true) {
+      const next = await reader.read()
+      if (next.done) {
+        reader.releaseLock()
+        readerOwned = false
+        return replayKiroResponse(res, prefix)
+      }
+
+      prefix.push(next.value)
+      buf = Buffer.concat([buf, Buffer.from(next.value)])
+      const { events, rest } = drainKiroEvents(buf)
+      buf = rest
+      for (const event of events) {
+        if (isKiroRateLimitError(event)) {
+          try {
+            await reader.cancel()
+          } catch {
+            // The synthetic 429 remains useful even if the upstream body resists cancellation.
+          } finally {
+            reader.releaseLock()
+            readerOwned = false
+          }
+          return rateLimitResponse(res, event)
+        }
+        if (isKiroStreamError(event) || event.eventType === "assistantResponseEvent" || event.eventType === "toolUseEvent") {
+          const replay = replayKiroResponse(res, prefix, reader)
+          readerOwned = false
+          return replay
+        }
+      }
+    }
+  } finally {
+    if (readerOwned) {
+      void reader.cancel().catch(() => {})
+      reader.releaseLock()
+    }
+  }
 }
 
 /** Convert Kiro's event-stream into the Anthropic Messages SSE stream opencode expects. */
