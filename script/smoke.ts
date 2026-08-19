@@ -181,6 +181,41 @@ checks.push([
   "empty tool event mapping",
   emptyToolResponse.status === 502 && (await emptyToolResponse.text()).includes("without assistant output"),
 ])
+// A complete tool call packed into one frame (input + stop together) is real output:
+// preflight must replay it and the SSE converter must emit a full tool_use block.
+const singleFrameToolResponse = await preflightKiroResponse(
+  chunkedResponse(
+    frame("toolUseEvent", { toolUseId: "one-shot", name: "bash", input: '{"command":"ls"}', stop: true }),
+    frame("contextUsageEvent", { contextUsagePercentage: 5 }),
+  ),
+)
+checks.push(["single-frame tool call passes preflight", singleFrameToolResponse.status === 200])
+const singleFrameSse = await kiroToAnthropicStream(singleFrameToolResponse, "claude-sonnet-4.6").text()
+checks.push([
+  "single-frame tool call streamed",
+  singleFrameSse.includes('"type":"tool_use"') &&
+    singleFrameSse.includes('"id":"one-shot"') &&
+    singleFrameSse.includes('"partial_json":"{\\"command\\":\\"ls\\"}"') &&
+    singleFrameSse.includes('"stop_reason":"tool_use"'),
+])
+// The observed multi-frame shape (start, input deltas, stop) must keep working unchanged.
+const multiFrameToolResponse = await preflightKiroResponse(
+  chunkedResponse(
+    frame("toolUseEvent", { toolUseId: "multi", name: "bash" }),
+    frame("toolUseEvent", { toolUseId: "multi", name: "bash", input: '{"command"' }),
+    frame("toolUseEvent", { toolUseId: "multi", name: "bash", input: ':"ls"}' }),
+    frame("toolUseEvent", { toolUseId: "multi", name: "bash", stop: true }),
+  ),
+)
+checks.push(["multi-frame tool call passes preflight", multiFrameToolResponse.status === 200])
+const multiFrameSse = await kiroToAnthropicStream(multiFrameToolResponse, "claude-sonnet-4.6").text()
+checks.push([
+  "multi-frame tool call streamed once",
+  multiFrameSse.split('"content_block_start"').length - 1 === 1 &&
+    multiFrameSse.includes('"id":"multi"') &&
+    multiFrameSse.includes('"partial_json":"{\\"command\\""') &&
+    multiFrameSse.includes('"stop_reason":"tool_use"'),
+])
 const filteredResponse = await preflightKiroResponse(
   chunkedResponse(
     frame("initial-response", { conversationId: "" }),

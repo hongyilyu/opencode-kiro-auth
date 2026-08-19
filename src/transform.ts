@@ -560,6 +560,8 @@ export async function preflightKiroResponse(
   debug: KiroDebugContext = createKiroDebugContext(),
 ): Promise<Response> {
   const preflightStartedAt = Date.now()
+  // Hoisted so the per-event debug shapes are never computed when debugging is off.
+  const debugEnabled = kiroDebugEnabled()
   const eventTypes: Record<string, number> = {}
   let chunks = 0
   let totalBytes = 0
@@ -628,21 +630,25 @@ export async function preflightKiroResponse(
       buf = Buffer.concat([buf, Buffer.from(next.value)])
       const { events, rest } = drainKiroEvents(buf)
       buf = Buffer.from(rest)
-      kiroDebug(debug, "response.chunk", {
-        chunk: chunks,
-        bytes: next.value.byteLength,
-        totalBytes,
-        decodedEvents: events.length,
-        trailingBytes: buf.length,
-      })
+      if (debugEnabled) {
+        kiroDebug(debug, "response.chunk", {
+          chunk: chunks,
+          bytes: next.value.byteLength,
+          totalBytes,
+          decodedEvents: events.length,
+          trailingBytes: buf.length,
+        })
+      }
       for (const event of events) {
         eventCount += 1
         eventTypes[event.eventType] = (eventTypes[event.eventType] ?? 0) + 1
-        kiroDebug(debug, "response.event", {
-          sequence: eventCount,
-          eventType: event.eventType,
-          ...kiroEventShape(event),
-        })
+        if (debugEnabled) {
+          kiroDebug(debug, "response.event", {
+            sequence: eventCount,
+            eventType: event.eventType,
+            ...kiroEventShape(event),
+          })
+        }
         if (event.eventType === "metadataEvent" && typeof event.payload.stopReason === "string") {
           terminalMetadata = event.payload
         }
@@ -686,8 +692,10 @@ export async function preflightKiroResponse(
           (event.eventType === "toolUseEvent" &&
             typeof event.payload.toolUseId === "string" &&
             event.payload.toolUseId.length > 0 &&
-            event.payload.input === undefined &&
-            event.payload.stop !== true)
+            // Output is a tool announcement (start frame) or any frame carrying input
+            // (covers complete single-frame calls). A bare stop frame is not output.
+            ((event.payload.input === undefined && event.payload.stop !== true) ||
+              (typeof event.payload.input === "string" && event.payload.input.length > 0)))
         ) {
           kiroDebug(debug, "response.output_detected", {
             eventType: event.eventType,
@@ -817,6 +825,8 @@ export function kiroToAnthropicStream(
       let outputChars = 0
       let eventCount = 0
       const eventTypes: Record<string, number> = {}
+      // Hoisted so the per-event debug shapes are never computed when debugging is off.
+      const debugEnabled = kiroDebugEnabled()
       kiroDebug(debug, "sse.start", { model, contextLimit })
 
       const closeBlock = () => {
@@ -830,11 +840,13 @@ export function kiroToAnthropicStream(
         for await (const ev of readKiroEvents(res)) {
           eventCount += 1
           eventTypes[ev.eventType] = (eventTypes[ev.eventType] ?? 0) + 1
-          kiroDebug(debug, "sse.event", {
-            sequence: eventCount,
-            eventType: ev.eventType,
-            ...kiroEventShape(ev),
-          })
+          if (debugEnabled) {
+            kiroDebug(debug, "sse.event", {
+              sequence: eventCount,
+              eventType: ev.eventType,
+              ...kiroEventShape(ev),
+            })
+          }
           if (ev.eventType === "assistantResponseEvent") {
             const content = ev.payload.content
             if (typeof content !== "string" || content.length === 0) continue
@@ -854,7 +866,9 @@ export function kiroToAnthropicStream(
             const input = ev.payload.input as string | undefined
             const stop = ev.payload.stop === true
 
-            if (id && id !== currentTool && input === undefined && !stop) {
+            // Open a block for a new tool id on its announcement frame, or on a
+            // complete single-frame call carrying input. A bare stop frame never opens one.
+            if (id && id !== currentTool && (input !== undefined || !stop)) {
               closeBlock()
               index += 1
               currentTool = id
@@ -865,9 +879,8 @@ export function kiroToAnthropicStream(
                 index,
                 content_block: { type: "tool_use", id, name: ev.payload.name, input: {} },
               })
-              continue
             }
-            if (typeof input === "string" && input.length > 0) {
+            if (currentTool && typeof input === "string" && input.length > 0) {
               send("content_block_delta", { type: "content_block_delta", index, delta: { type: "input_json_delta", partial_json: input } })
             }
             if (stop) closeBlock()
