@@ -1,6 +1,7 @@
 // Combined regression smoke test after the release cleanup.
 import { toKiroRequest, kiroToAnthropicStream, mapKiroError, preflightKiroResponse } from "../src/transform"
 import { KiroAuthPlugin } from "../src/plugin"
+import type { KiroDebugContext } from "../src/debug"
 
 const checks: Array<[string, boolean]> = []
 const cur = (body: any) => JSON.parse(toKiroRequest(body, "t", "a").init.body as string).conversationState.currentMessage.userInputMessage
@@ -124,12 +125,145 @@ checks.push([
 if (originalRetrySeconds === undefined) delete process.env.KIRO_RATE_LIMIT_RETRY_SECONDS
 else process.env.KIRO_RATE_LIMIT_RETRY_SECONDS = originalRetrySeconds
 
-// 7) HTTP error mapping -> context overflow phrase.
+// 7) Pre-output timeout -> retryable HTTP error, never a successful empty turn.
+const timedOutResponse = await preflightKiroResponse(
+  chunkedResponse(frame("error", { message: "TimeoutError: The operation timed out." })),
+)
+const timedOutBody = await timedOutResponse.json() as any
+checks.push([
+  "stream timeout mapping",
+  timedOutResponse.status === 504 &&
+    timedOutBody?.error?.type === "api_error" &&
+    timedOutBody?.error?.message.includes("timed out"),
+])
+const thrownTimeoutResponse = await preflightKiroResponse(
+  new Response(
+    new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.error(new DOMException("The operation timed out.", "TimeoutError"))
+      },
+    }),
+  ),
+)
+checks.push([
+  "transport timeout mapping",
+  thrownTimeoutResponse.status === 504 &&
+    (await thrownTimeoutResponse.text()).includes("TimeoutError: The operation timed out."),
+])
+
+// 8) Metadata and empty assistant events are not model output.
+const emptyResponse = await preflightKiroResponse(
+  chunkedResponse(
+    frame("assistantResponseEvent", { content: "" }),
+    frame("contextUsageEvent", { contextUsagePercentage: 19.8811 }),
+    frame("meteringEvent", { usage: 1 }),
+  ),
+)
+const emptyBody = await emptyResponse.json() as any
+checks.push([
+  "empty stream mapping",
+  emptyResponse.status === 502 &&
+    emptyBody?.error?.type === "api_error" &&
+    emptyBody?.error?.message.includes("without assistant output"),
+])
+const bodylessResponse = await preflightKiroResponse(new Response(null))
+checks.push([
+  "bodyless response mapping",
+  bodylessResponse.status === 502 && (await bodylessResponse.text()).includes("without an event stream"),
+])
+const emptyToolResponse = await preflightKiroResponse(
+  chunkedResponse(frame("toolUseEvent", { toolUseId: "orphan-stop", stop: true })),
+)
+checks.push([
+  "empty tool event mapping",
+  emptyToolResponse.status === 502 && (await emptyToolResponse.text()).includes("without assistant output"),
+])
+const filteredResponse = await preflightKiroResponse(
+  chunkedResponse(
+    frame("initial-response", { conversationId: "" }),
+    frame("metadataEvent", {
+      stopReason: "CONTENT_FILTERED",
+      stopDetails: {
+        refusal: {
+          category: "REASONING_EXTRACTION",
+          explanation: "Select a different model or start a new conversation.",
+        },
+      },
+    }),
+    frame("contextUsageEvent", { contextUsagePercentage: 19.88 }),
+  ),
+)
+const filteredBody = await filteredResponse.json() as any
+checks.push([
+  "content filter mapping",
+  filteredResponse.status === 400 &&
+    filteredBody?.error?.type === "invalid_request_error" &&
+    filteredBody?.error?.message.includes("REASONING_EXTRACTION") &&
+    filteredBody?.error?.message.includes("Select a different model") &&
+    filteredBody?.error?.message.includes("Retrying the unchanged conversation will not help"),
+])
+
+// 9) Debug diagnostics expose request/event shapes without transcript content.
+const originalDebug = process.env.KIRO_DEBUG
+process.env.KIRO_DEBUG = "1"
+const debugLines: string[] = []
+const originalConsoleError = console.error
+console.error = (...args: unknown[]) => debugLines.push(args.map(String).join(" "))
+try {
+  const debug: KiroDebugContext = { id: "debug-smoke", startedAt: Date.now() }
+  toKiroRequest(
+    {
+      model: "claude-sonnet-4.6",
+      messages: [
+        { role: "user", content: "SECRET_PROMPT_TEXT" },
+        { role: "assistant", content: "SECRET_ASSISTANT_TEXT" },
+        { role: "user", content: "current" },
+      ],
+    },
+    "SECRET_ACCESS_TOKEN",
+    "SECRET_PROFILE_ARN",
+    undefined,
+    debug,
+  )
+  const debugResponse = await preflightKiroResponse(
+    chunkedResponse(
+      frame("assistantResponseEvent", { content: "SECRET_MODEL_OUTPUT" }),
+      frame("metadataEvent", { stopReason: "end_turn" }),
+      frame("contextUsageEvent", { contextUsagePercentage: 7 }),
+    ),
+    debug,
+  )
+  await kiroToAnthropicStream(debugResponse, "claude-sonnet-4.6", 1_000_000, debug).text()
+} finally {
+  console.error = originalConsoleError
+  if (originalDebug === undefined) delete process.env.KIRO_DEBUG
+  else process.env.KIRO_DEBUG = originalDebug
+}
+const debugOutput = debugLines.join("\n")
+checks.push([
+  "debug diagnostics emitted",
+  debugOutput.includes('"trace":"debug-smoke"') &&
+    debugOutput.includes('"event":"request.history_shape"') &&
+    debugOutput.includes('"event":"request.history_entry"') &&
+    debugOutput.includes('"event":"response.event"') &&
+    debugOutput.includes('"contentChars":19') &&
+    debugOutput.includes('"stopReason":"end_turn"'),
+])
+checks.push([
+  "debug diagnostics redact content",
+  !debugOutput.includes("SECRET_PROMPT_TEXT") &&
+    !debugOutput.includes("SECRET_ASSISTANT_TEXT") &&
+    !debugOutput.includes("SECRET_MODEL_OUTPUT") &&
+    !debugOutput.includes("SECRET_ACCESS_TOKEN") &&
+    !debugOutput.includes("SECRET_PROFILE_ARN"),
+])
+
+// 10) HTTP error mapping -> context overflow phrase.
 const mapped = mapKiroError(JSON.stringify({ reason: "CONTENT_LENGTH_EXCEEDS_THRESHOLD", message: "Input content length exceeds threshold." }), 400)
 checks.push(["overflow mapping", mapped.status === 400 && mapped.body.toLowerCase().includes("prompt is too long")])
 checks.push(["passthrough", mapKiroError("boom", 500).body === "boom"])
 
-// 8) Mixed tool_result + text turn WITH tools present: inline result, unpair tool_use.
+// 10) Mixed tool_result + text turn WITH tools present: inline result, unpair tool_use.
 const mixed = JSON.parse(
   toKiroRequest(
     {
@@ -157,7 +291,7 @@ checks.push(["mixed turn drops structured toolResults", mixedCurrent.userInputMe
 checks.push(["mixed turn keeps text", mixedCurrent.content.includes("Create a summary") && mixedCurrent.content.includes("shot-data")])
 checks.push(["preceding assistant unpaired", mixedPrevAsst.toolUses === undefined])
 
-// 8) Pure tool-result continuation (no text) WITH tools present stays structured.
+// 11) Pure tool-result continuation (no text) WITH tools present stays structured.
 const pure = JSON.parse(
   toKiroRequest(
     {
@@ -175,7 +309,7 @@ const pure = JSON.parse(
 ).conversationState
 checks.push(["pure continuation keeps toolResults", Boolean(pure.currentMessage.userInputMessage.userInputMessageContext.toolResults)])
 
-// 8) Orphan tool_use WITH tools present (compaction cut): degraded to text on both sides.
+// 12) Orphan tool_use WITH tools present (compaction cut): degraded to text on both sides.
 const orphan = JSON.parse(
   toKiroRequest(
     {
@@ -195,7 +329,32 @@ const orphanHasToolUse = orphan.history.some((e: any) => e.assistantResponseMess
 const orphanHasCalledText = JSON.stringify(orphan.history).includes("[called bash")
 checks.push(["orphan tool_use degraded", !orphanHasToolUse && orphanHasCalledText])
 
-// 9) Variant -> additionalModelRequestFields mapping (Claude vs GPT vs none).
+// A history cut can make a tool-result continuation the first user turn. Folding the
+// system prompt into it makes the turn mixed, so normalize after folding and flatten it.
+const systemOnResult = JSON.parse(
+  toKiroRequest(
+    {
+      model: "claude-sonnet-4.6",
+      system: "system",
+      tools: [{ name: "bash", description: "d", input_schema: { type: "object" } }],
+      messages: [
+        { role: "assistant", content: [{ type: "tool_use", id: "cut1", name: "bash", input: {} }] },
+        { role: "user", content: [{ type: "tool_result", tool_use_id: "cut1", content: "result" }] },
+        { role: "user", content: "continue" },
+      ],
+    } as any,
+    "t",
+    "a",
+  ).init.body as string,
+).conversationState
+checks.push([
+  "system mixed with first tool result is flattened",
+  !JSON.stringify(systemOnResult.history).includes("toolResults") &&
+    !JSON.stringify(systemOnResult.history).includes("toolUses") &&
+    JSON.stringify(systemOnResult.history).includes("result"),
+])
+
+// 13) Variant -> additionalModelRequestFields mapping (Claude vs GPT vs none).
 const fields = (model: string, effort?: string) =>
   JSON.parse(toKiroRequest({ model, messages: [{ role: "user", content: "hi" }] } as any, "t", "a", effort).init.body as string)
     .additionalModelRequestFields
@@ -204,7 +363,7 @@ checks.push(["claude variant -> output_config.effort", claudeFields?.output_conf
 checks.push(["gpt variant -> reasoning.effort", fields("gpt-5.6-sol", "xhigh")?.reasoning?.effort === "xhigh"])
 checks.push(["no variant -> no extra fields", fields("claude-fable-5") === undefined])
 
-// 10) Only the exact active model may expose one of its configured variants as effort.
+// 14) Only the exact active model may expose one of its configured variants as effort.
 const hooks = await KiroAuthPlugin({} as any)
 const effortHeader = async (activeModel: string, supported: string[], selectedModel: string, variant: string) => {
   const output = { headers: {} as Record<string, string> }
