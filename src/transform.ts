@@ -10,6 +10,13 @@ import {
   resolveRateLimitRetryAfter,
 } from "./constants"
 import { drainKiroEvents, readKiroEvents, type KiroEvent } from "./eventstream"
+import {
+  createKiroDebugContext,
+  kiroDebug,
+  kiroDebugEnabled,
+  kiroDebugError,
+  type KiroDebugContext,
+} from "./debug"
 
 /* ----------------------------- request mapping ----------------------------- */
 
@@ -97,6 +104,36 @@ function textOf(content: string | Block[]): string {
     .filter((b) => b?.type === "text" && typeof b.text === "string")
     .map((b) => b.text)
     .join("\n")
+}
+
+function contentShape(content: string | Block[]) {
+  if (typeof content === "string") return { textChars: content.length, blockTypes: { string: 1 } }
+
+  const blockTypes: Record<string, number> = {}
+  let textChars = 0
+  let imageBytes = 0
+  const toolUses: Array<{ id: string; name: string }> = []
+  const toolResults: Array<{ toolUseId: string; contentChars: number; isError: boolean }> = []
+  for (const block of content) {
+    const type = typeof block?.type === "string" ? block.type : "unknown"
+    blockTypes[type] = (blockTypes[type] ?? 0) + 1
+    if (type === "text" && typeof block.text === "string") textChars += block.text.length
+    if (isImageBlock(block) && typeof block.source.data === "string") imageBytes += block.source.data.length
+    if (type === "tool_use") {
+      toolUses.push({
+        id: typeof block.id === "string" ? block.id : "",
+        name: typeof block.name === "string" ? block.name : "",
+      })
+    }
+    if (type === "tool_result") {
+      toolResults.push({
+        toolUseId: typeof block.tool_use_id === "string" ? block.tool_use_id : "",
+        contentChars: stringifyResultContent(block.content).length,
+        isError: block.is_error === true,
+      })
+    }
+  }
+  return { textChars, imageBytes, blockTypes, toolUses, toolResults }
 }
 
 function systemText(system: AnthropicRequest["system"]): string {
@@ -290,15 +327,13 @@ export function toKiroRequest(
   accessToken: string,
   profileArn: string,
   effort?: string,
+  debug: KiroDebugContext = createKiroDebugContext(),
 ): { url: string; init: RequestInit } {
   const modelId = body.model || DEFAULT_MODEL
 
   // CodeWhisperer has no system role: fold the system prompt into the first user turn.
   const messages = (body.messages ?? []).map((m) => ({ ...m }))
   const tools = toolSpecs(body.tools)
-  // Keep clean tool pairs structured when tools are present; otherwise (compaction/summaries)
-  // degrade all tool blocks to text. Also fixes orphan/mixed tool turns either way.
-  normalizeToolBlocks(messages, Boolean(tools))
 
   const sys = systemText(body.system)
   if (sys) {
@@ -310,6 +345,11 @@ export function toKiroRequest(
           : [{ type: "text", text: sys }, ...firstUser.content]
     }
   }
+
+  // Fold the system prompt first: after a history cut, the first surviving user turn can
+  // be a tool result. Adding system text makes that a mixed turn, which must be flattened.
+  // Keep clean tool pairs structured when tools are present; otherwise degrade them to text.
+  normalizeToolBlocks(messages, Boolean(tools))
 
   // Keep images only on the most recent N image-bearing turns; strip older ones so the
   // serialized request stays under Kiro's content-length threshold.
@@ -342,6 +382,37 @@ export function toKiroRequest(
     ...(additionalModelRequestFields ? { additionalModelRequestFields } : {}),
   }
 
+  const serializedPayload = JSON.stringify(payload)
+  kiroDebug(debug, "request.mapped", {
+    modelId,
+    effort: effort ?? null,
+    sourceMessages: body.messages?.length ?? 0,
+    historyEntries: history.length,
+    requestBytes: Buffer.byteLength(serializedPayload),
+    systemChars: sys.length,
+    toolCount: tools?.length ?? 0,
+    toolNames: body.tools?.map((tool) => tool.name).filter((name) => typeof name === "string") ?? [],
+    imageTurns: imageIdx.length,
+    keptImageTurns: [...keepSet],
+  })
+  if (kiroDebugEnabled()) {
+    kiroDebug(debug, "request.history_shape", {
+      messages: messages.length,
+      userMessages: messages.filter((message) => message.role === "user").length,
+      assistantMessages: messages.filter((message) => message.role === "assistant").length,
+    })
+    messages.forEach((message, index) => {
+      const encoded = index < history.length ? history[index] : payload.conversationState.currentMessage
+      kiroDebug(debug, "request.history_entry", {
+        index,
+        role: message.role,
+        current: index === messages.length - 1,
+        encodedBytes: Buffer.byteLength(JSON.stringify(encoded)),
+        ...contentShape(message.content),
+      })
+    })
+  }
+
   return {
     url: KIRO_ENDPOINT,
     init: {
@@ -353,10 +424,10 @@ export function toKiroRequest(
         "user-agent": KIRO_USER_AGENT,
         "x-amz-user-agent": KIRO_X_AMZ_USER_AGENT,
         "x-amzn-codewhisperer-optout": "false",
-        "amz-sdk-invocation-id": randomUUID(),
+        "amz-sdk-invocation-id": debug.id,
         "amz-sdk-request": "attempt=1; max=3",
       },
-      body: JSON.stringify(payload),
+      body: serializedPayload,
     },
   }
 }
@@ -383,6 +454,12 @@ function isKiroRateLimitError(event: KiroEvent): boolean {
     /\brate(?:[\s_-]+limit)?[\s_-]+exceeded\b/.test(detail) ||
     /"(?:status|statuscode|httpstatuscode)"\s*:\s*429\b/.test(detail)
   )
+}
+
+function isKiroTimeoutError(event: KiroEvent): boolean {
+  if (!isKiroStreamError(event)) return false
+  const detail = `${event.eventType} ${JSON.stringify(event.payload)}`
+  return /timeout|timed out/i.test(detail)
 }
 
 function kiroStreamErrorMessage(event: KiroEvent): string {
@@ -454,44 +531,116 @@ function replayKiroResponse(
   })
 }
 
+function streamErrorResponse(status: number, type: string, message: string, headers?: Headers): Response {
+  return new Response(JSON.stringify({ type: "error", error: { type, message } }), {
+    status,
+    headers: headers ?? { "content-type": "application/json" },
+  })
+}
+
 function rateLimitResponse(res: Response, event: KiroEvent): Response {
   const headers = new Headers({ "content-type": "application/json" })
   const retryAfter = kiroRetryAfter(res, event)
   if (retryAfter) headers.set("retry-after", retryAfter)
-  return new Response(
-    JSON.stringify({
-      type: "error",
-      error: { type: "rate_limit_error", message: kiroStreamErrorMessage(event) },
-    }),
-    { status: 429, headers },
-  )
+  return streamErrorResponse(429, "rate_limit_error", kiroStreamErrorMessage(event), headers)
 }
 
 /**
- * Kiro can return HTTP 200 and put throttling in the AWS event stream. Read only
- * through the first output/error event, replaying the exact prefix for successful
- * responses. A pre-output throttle becomes the HTTP 429 opencode already retries.
+ * Kiro can return HTTP 200 and put failures in the AWS event stream. Read through
+ * the first real output/error event, replaying the exact prefix for successful
+ * responses. Pre-output failures become HTTP errors opencode can retry or surface.
  */
-export async function preflightKiroResponse(res: Response): Promise<Response> {
-  if (!res.body) return res
+export async function preflightKiroResponse(
+  res: Response,
+  debug: KiroDebugContext = createKiroDebugContext(),
+): Promise<Response> {
+  const preflightStartedAt = Date.now()
+  const eventTypes: Record<string, number> = {}
+  let chunks = 0
+  let totalBytes = 0
+  let eventCount = 0
+  let terminalMetadata: Record<string, unknown> | undefined
+  kiroDebug(debug, "response.preflight_start", { status: res.status, hasBody: Boolean(res.body) })
+  if (!res.body) {
+    kiroDebug(debug, "response.body_missing", { status: res.status })
+    return streamErrorResponse(502, "api_error", "Kiro returned a response without an event stream.")
+  }
   const reader = res.body.getReader()
   const prefix: Uint8Array[] = []
   let buf = Buffer.alloc(0)
   let readerOwned = true
   try {
     while (true) {
-      const next = await reader.read()
+      let next: ReadableStreamReadResult<Uint8Array>
+      try {
+        next = await reader.read()
+      } catch (error) {
+        readerOwned = false
+        reader.releaseLock()
+        const message = String(error)
+        kiroDebug(debug, "response.read_error", {
+          ...kiroDebugError(error),
+          chunks,
+          totalBytes,
+          eventCount,
+          eventTypes,
+          preflightMs: Date.now() - preflightStartedAt,
+        })
+        return streamErrorResponse(
+          /timeout|timed out/i.test(message) ? 504 : 502,
+          "api_error",
+          message,
+        )
+      }
       if (next.done) {
         reader.releaseLock()
         readerOwned = false
-        return replayKiroResponse(res, prefix)
+        kiroDebug(debug, "response.empty_eof", {
+          chunks,
+          totalBytes,
+          eventCount,
+          eventTypes,
+          trailingBytes: buf.length,
+          preflightMs: Date.now() - preflightStartedAt,
+        })
+        if (terminalMetadata?.stopReason === "CONTENT_FILTERED") {
+          return streamErrorResponse(
+            400,
+            "invalid_request_error",
+            contentFilteredMessage(terminalMetadata),
+          )
+        }
+        return streamErrorResponse(
+          502,
+          "api_error",
+          "Kiro closed the response stream without assistant output.",
+        )
       }
 
+      chunks += 1
+      totalBytes += next.value.byteLength
       prefix.push(next.value)
       buf = Buffer.concat([buf, Buffer.from(next.value)])
       const { events, rest } = drainKiroEvents(buf)
       buf = rest
+      kiroDebug(debug, "response.chunk", {
+        chunk: chunks,
+        bytes: next.value.byteLength,
+        totalBytes,
+        decodedEvents: events.length,
+        trailingBytes: buf.length,
+      })
       for (const event of events) {
+        eventCount += 1
+        eventTypes[event.eventType] = (eventTypes[event.eventType] ?? 0) + 1
+        kiroDebug(debug, "response.event", {
+          sequence: eventCount,
+          eventType: event.eventType,
+          ...kiroEventShape(event),
+        })
+        if (event.eventType === "metadataEvent" && typeof event.payload.stopReason === "string") {
+          terminalMetadata = event.payload
+        }
         if (isKiroRateLimitError(event)) {
           try {
             await reader.cancel()
@@ -501,9 +650,47 @@ export async function preflightKiroResponse(res: Response): Promise<Response> {
             reader.releaseLock()
             readerOwned = false
           }
+          kiroDebug(debug, "response.rate_limited", {
+            eventType: event.eventType,
+            retryAfter: kiroRetryAfter(res, event) ?? null,
+          })
           return rateLimitResponse(res, event)
         }
-        if (isKiroStreamError(event) || event.eventType === "assistantResponseEvent" || event.eventType === "toolUseEvent") {
+        if (isKiroTimeoutError(event)) {
+          try {
+            await reader.cancel()
+          } catch {
+            // The synthetic timeout remains useful even if the upstream body resists cancellation.
+          } finally {
+            reader.releaseLock()
+            readerOwned = false
+          }
+          kiroDebug(debug, "response.timed_out", { eventType: event.eventType })
+          return streamErrorResponse(504, "api_error", kiroStreamErrorMessage(event))
+        }
+        if (isKiroStreamError(event)) {
+          kiroDebug(debug, "response.error_passthrough", { eventType: event.eventType })
+          const replay = replayKiroResponse(res, prefix, reader)
+          readerOwned = false
+          return replay
+        }
+        if (
+          (event.eventType === "assistantResponseEvent" &&
+            typeof event.payload.content === "string" &&
+            event.payload.content.length > 0) ||
+          (event.eventType === "toolUseEvent" &&
+            typeof event.payload.toolUseId === "string" &&
+            event.payload.toolUseId.length > 0 &&
+            event.payload.input === undefined &&
+            event.payload.stop !== true)
+        ) {
+          kiroDebug(debug, "response.output_detected", {
+            eventType: event.eventType,
+            chunks,
+            totalBytes,
+            eventCount,
+            preflightMs: Date.now() - preflightStartedAt,
+          })
           const replay = replayKiroResponse(res, prefix, reader)
           readerOwned = false
           return replay
@@ -518,8 +705,83 @@ export async function preflightKiroResponse(res: Response): Promise<Response> {
   }
 }
 
+function contentFilteredMessage(metadata: Record<string, unknown>): string {
+  const refusal =
+    metadata.stopDetails && typeof metadata.stopDetails === "object"
+      ? (metadata.stopDetails as { refusal?: unknown }).refusal
+      : undefined
+  const category =
+    refusal && typeof refusal === "object" && typeof (refusal as { category?: unknown }).category === "string"
+      ? (refusal as { category: string }).category
+      : undefined
+  const explanation =
+    refusal && typeof refusal === "object" && typeof (refusal as { explanation?: unknown }).explanation === "string"
+      ? (refusal as { explanation: string }).explanation
+      : undefined
+
+  return [
+    `Kiro blocked this response${category ? ` (${category})` : " because the conversation triggered its content filter"}.`,
+    explanation,
+    "Retrying the unchanged conversation will not help.",
+  ]
+    .filter(Boolean)
+    .join(" ")
+}
+
+function kiroEventShape(event: KiroEvent): Record<string, unknown> {
+  const payload = event.payload
+  const shape: Record<string, unknown> = { payloadKeys: Object.keys(payload).sort() }
+  for (const key of [
+    "conversationId",
+    "stopReason",
+    "reason",
+    "code",
+    "errorCode",
+    "status",
+    "statusCode",
+    "unit",
+    "unitPlural",
+    "usage",
+  ]) {
+    const value = payload[key]
+    if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
+      shape[key] = value
+    }
+  }
+  if (typeof payload.content === "string") shape.contentChars = payload.content.length
+  if (typeof payload.toolUseId === "string") shape.toolUseId = payload.toolUseId
+  if (typeof payload.name === "string") shape.toolName = payload.name
+  if (typeof payload.input === "string") shape.inputChars = payload.input.length
+  if (typeof payload.stop === "boolean") shape.stop = payload.stop
+  if (typeof payload.contextUsagePercentage === "number") {
+    shape.contextUsagePercentage = payload.contextUsagePercentage
+  }
+  if (typeof payload.message === "string") shape.message = payload.message.slice(0, 500)
+  if (typeof payload.Message === "string") shape.message = payload.Message.slice(0, 500)
+  if (typeof payload.errorMessage === "string") shape.message = payload.errorMessage.slice(0, 500)
+  if (typeof payload.raw === "string") shape.rawChars = payload.raw.length
+  const refusal =
+    payload.stopDetails && typeof payload.stopDetails === "object"
+      ? (payload.stopDetails as { refusal?: unknown }).refusal
+      : undefined
+  if (refusal && typeof refusal === "object") {
+    const category = (refusal as { category?: unknown }).category
+    const explanation = (refusal as { explanation?: unknown }).explanation
+    shape.refusal = {
+      ...(typeof category === "string" ? { category: category.slice(0, 100) } : {}),
+      ...(typeof explanation === "string" ? { explanation: explanation.slice(0, 500) } : {}),
+    }
+  }
+  return shape
+}
+
 /** Convert Kiro's event-stream into the Anthropic Messages SSE stream opencode expects. */
-export function kiroToAnthropicStream(res: Response, model: string, contextLimit = 1_000_000): Response {
+export function kiroToAnthropicStream(
+  res: Response,
+  model: string,
+  contextLimit = 1_000_000,
+  debug: KiroDebugContext = createKiroDebugContext(),
+): Response {
   const stream = new ReadableStream<Uint8Array>({
     async start(controller) {
       const enc = new TextEncoder()
@@ -548,6 +810,9 @@ export function kiroToAnthropicStream(res: Response, model: string, contextLimit
       // gauge, and estimate output tokens from the streamed text (~4 chars/token).
       let contextPercent: number | null = null
       let outputChars = 0
+      let eventCount = 0
+      const eventTypes: Record<string, number> = {}
+      kiroDebug(debug, "sse.start", { model, contextLimit })
 
       const closeBlock = () => {
         if (!blockOpen) return
@@ -558,6 +823,13 @@ export function kiroToAnthropicStream(res: Response, model: string, contextLimit
 
       try {
         for await (const ev of readKiroEvents(res)) {
+          eventCount += 1
+          eventTypes[ev.eventType] = (eventTypes[ev.eventType] ?? 0) + 1
+          kiroDebug(debug, "sse.event", {
+            sequence: eventCount,
+            eventType: ev.eventType,
+            ...kiroEventShape(ev),
+          })
           if (ev.eventType === "assistantResponseEvent") {
             const content = ev.payload.content
             if (typeof content !== "string" || content.length === 0) continue
@@ -617,7 +889,21 @@ export function kiroToAnthropicStream(res: Response, model: string, contextLimit
           usage: { input_tokens: inputTokens, output_tokens: outputTokens },
         })
         send("message_stop", { type: "message_stop" })
+        kiroDebug(debug, "sse.complete", {
+          eventCount,
+          eventTypes,
+          outputChars,
+          usedTool,
+          contextPercent,
+        })
       } catch (error) {
+        kiroDebug(debug, "sse.error", {
+          ...kiroDebugError(error),
+          eventCount,
+          eventTypes,
+          outputChars,
+          usedTool,
+        })
         send("error", { type: "error", error: { type: "api_error", message: String(error) } })
       } finally {
         controller.close()

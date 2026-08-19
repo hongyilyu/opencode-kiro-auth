@@ -15,6 +15,7 @@ import { toKiroRequest, kiroToAnthropicStream, mapKiroError, preflightKiroRespon
 import { getProfileArn } from "./profile"
 import { resolveContextLimit } from "./limits"
 import { createTools } from "./tools"
+import { createKiroDebugContext, kiroDebug, kiroDebugError } from "./debug"
 
 /** Internal header carrying a validated opencode variant to the fetch interceptor as Kiro effort. */
 const EFFORT_HEADER = "x-kiro-effort"
@@ -111,21 +112,48 @@ export async function KiroAuthPlugin(input: PluginInput): Promise<Hooks> {
         return {
           apiKey: "",
           async fetch(_input: Parameters<typeof fetch>[0], init?: RequestInit) {
+            const debug = createKiroDebugContext()
             const accessToken = await getAccessToken()
             const body = typeof init?.body === "string" && init.body.length > 0 ? JSON.parse(init.body) : {}
             const model = typeof body.model === "string" ? body.model : DEFAULT_MODEL
 
             const effort = new Headers(init?.headers).get(EFFORT_HEADER) ?? undefined
+            kiroDebug(debug, "request.received", {
+              model,
+              effort: effort ?? null,
+              anthropicRequestBytes: typeof init?.body === "string" ? Buffer.byteLength(init.body) : 0,
+              messageCount: Array.isArray(body.messages) ? body.messages.length : 0,
+              toolCount: Array.isArray(body.tools) ? body.tools.length : 0,
+            })
 
             const profileArn = await getProfileArn(accessToken)
-            const request = toKiroRequest(body, accessToken, profileArn, effort)
-            const response = await fetch(request.url, request.init)
+            kiroDebug(debug, "profile.resolved", { hasProfile: Boolean(profileArn) })
+            const request = toKiroRequest(body, accessToken, profileArn, effort, debug)
+            kiroDebug(debug, "request.fetch_start", { url: request.url })
+            let response: Response
+            try {
+              response = await fetch(request.url, request.init)
+            } catch (error) {
+              kiroDebug(debug, "request.fetch_error", kiroDebugError(error))
+              throw error
+            }
+            kiroDebug(debug, "response.received", {
+              status: response.status,
+              statusText: response.statusText,
+              headers: responseDebugHeaders(response.headers),
+            })
 
             if (!response.ok) {
               // Reshape known Kiro errors (e.g. content-length overflow) into an actionable
               // message; opencode persists the raw body in its session store for anything else.
               const detail = await response.text().catch(() => "")
               const mapped = mapKiroError(detail, response.status)
+              kiroDebug(debug, "response.http_error", {
+                upstreamStatus: response.status,
+                mappedStatus: mapped.status,
+                bodyBytes: Buffer.byteLength(detail),
+                error: responseErrorShape(detail),
+              })
               const headers = new Headers({ "content-type": "application/json" })
               const retryAfter =
                 mapped.status === 429
@@ -138,17 +166,47 @@ export async function KiroAuthPlugin(input: PluginInput): Promise<Hooks> {
               })
             }
 
-            const streamResponse = await preflightKiroResponse(response)
-            if (!streamResponse.ok) return streamResponse
+            const streamResponse = await preflightKiroResponse(response, debug)
+            if (!streamResponse.ok) {
+              kiroDebug(debug, "response.preflight_error", { status: streamResponse.status })
+              return streamResponse
+            }
 
             // Context window is read from the live opencode config so the synthesized usage
             // percentage matches what opencode shows.
             const contextLimit = await resolveContextLimit(input.client, PROVIDER_ID, model)
-            return kiroToAnthropicStream(streamResponse, model, contextLimit)
+            kiroDebug(debug, "response.preflight_ok", { contextLimit })
+            return kiroToAnthropicStream(streamResponse, model, contextLimit, debug)
           },
         }
       },
     },
+  }
+}
+
+function responseDebugHeaders(headers: Headers): Record<string, string> {
+  const selected = [
+    "content-type",
+    "content-length",
+    "x-amzn-requestid",
+    "x-amzn-request-id",
+    "x-amz-request-id",
+    "x-amzn-trace-id",
+  ]
+  return Object.fromEntries(selected.flatMap((name) => (headers.has(name) ? [[name, headers.get(name) ?? ""]] : [])))
+}
+
+function responseErrorShape(detail: string): Record<string, unknown> {
+  try {
+    const value = JSON.parse(detail) as Record<string, unknown>
+    return {
+      keys: Object.keys(value).sort(),
+      reason: typeof value.reason === "string" ? value.reason : undefined,
+      type: typeof value.type === "string" ? value.type : undefined,
+      message: typeof value.message === "string" ? value.message.slice(0, 500) : undefined,
+    }
+  } catch {
+    return { parseable: false }
   }
 }
 

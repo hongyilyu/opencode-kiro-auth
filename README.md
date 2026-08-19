@@ -67,8 +67,12 @@ without a variant selected send no effort field, leaving behavior unchanged.
   have one, else the fixed Builder-ID placeholder.
 - `transform.ts` maps the Anthropic Messages request opencode sends into Kiro's
   CodeWhisperer `GenerateAssistantResponse` request (text, tool calls, images), and
-  converts the AWS event-stream response back into an Anthropic SSE stream. Pre-output
-  throttling exceptions are promoted to HTTP 429 responses so opencode keeps retrying.
+  converts the AWS event-stream response back into an Anthropic SSE stream. Before any
+  output, throttling becomes HTTP 429, timeouts become HTTP 504, and a stream that ends
+  without text or a tool call becomes HTTP 502, so opencode retries instead of recording
+  a successful empty assistant turn. A terminal `CONTENT_FILTERED` event becomes a clear
+  non-retryable HTTP 400, including Kiro's refusal category and recovery guidance, because
+  retrying the same conversation cannot change the result.
 - `plugin.ts` registers the opencode `auth` hook whose loader returns the
   intercepting `fetch`.
 
@@ -78,8 +82,13 @@ without a variant selected send no effort field, leaving behavior unchanged.
 | --- | --- | --- |
 | `KIRO_RATE_LIMIT_RETRY_SECONDS` | Unset | Positive integer that overrides the retry interval for HTTP 429 and pre-output throttling responses. When unset or invalid, upstream `Retry-After` values and opencode's normal backoff are preserved. |
 | `KIRO_KEEP_IMAGE_TURNS` | `2` | Number of recent image-bearing turns retained in requests. Set to `0` to strip all images. |
+| `KIRO_DEBUG` | Unset | Set to `1` to write correlated request and event-stream diagnostics to stderr. Logs contain shapes and byte counts, not prompt text, tool output, credentials, or tokens. |
 
 Example: `KIRO_RATE_LIMIT_RETRY_SECONDS=10 opencode`.
+
+For a failing session, restart opencode with `KIRO_DEBUG=1` and capture stderr. Every
+attempt uses the same trace UUID as its AWS SDK invocation ID, making retries and Kiro
+request IDs easy to correlate.
 
 ## Large images and long sessions
 
