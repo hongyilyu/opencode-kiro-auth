@@ -61,6 +61,13 @@ const ENV_STATE = {
   environmentVariables: [] as string[],
 }
 
+const KTR_MARKER = ".KTR~~"
+const KTR_REASONING_PLACEHOLDER = "..."
+// OpenCode drops an empty Anthropic thinking block before its later signature_delta arrives.
+// A single space keeps the block alive in its session; assistantEntry restores Kiro's empty
+// omitted-thinking form before replaying the signature.
+const OMITTED_REASONING_SENTINEL = " "
+
 /**
  * Format the local time exactly like kiro-cli's CONTEXT ENTRY, e.g.
  * "Friday, 2026-06-12T20:09:05.270+07:00" (long weekday + ISO8601 local time with ms
@@ -158,10 +165,10 @@ function toolSpecs(tools?: Block[]) {
  * which kiro-cli only ever sends in clean form. A tool id is kept as a structured pair only if:
  *   - the request actually carries tools (`keepStructured`),
  *   - both its tool_use and tool_result are present (no orphan from a compaction cut), and
- *   - the tool_result turn isn't mixed with regular text (Bedrock rejects that).
- * Every other tool_use/tool_result (orphans, mixed turns, and all blocks on tool-less requests
- * like compaction/summaries) is degraded to plain text on BOTH sides, keeping the conversation
- * valid while preserving the information.
+ *   - the tool_result turn isn't mixed with regular text after retry turns have been split.
+ * Every other tool_use/tool_result (orphans, malformed mixed turns, and all blocks on tool-less
+ * requests like compaction/summaries) is degraded to plain text on BOTH sides, keeping the
+ * conversation valid while preserving the information.
  */
 function normalizeToolBlocks(messages: Message[], keepStructured: boolean): void {
   const info = new Map<string, { use: boolean; result: boolean; mixed: boolean }>()
@@ -204,6 +211,36 @@ function normalizeToolBlocks(messages: Message[], keepStructured: boolean): void
         return b
       }),
     }
+  }
+}
+
+const TOOL_RETRY_BOUNDARY = "The tool calls completed before the next user message."
+
+/**
+ * Bedrock rejects a user turn containing both tool_result blocks and ordinary text. OpenCode can
+ * create that shape when a user manually retries after a completed tool turn: the adapter merges
+ * the stale results with the new text. Preserve the real tool protocol, then separate the new
+ * user message with an assistant boundary so Kiro does not treat protocol markers as user text.
+ */
+function splitMixedToolResultTurns(messages: Message[]): void {
+  for (let i = 0; i < messages.length; i++) {
+    const message = messages[i]
+    if (message.role !== "user" || typeof message.content === "string") continue
+
+    const results = message.content.filter((block) => block?.type === "tool_result")
+    const rest = message.content.filter((block) => block?.type !== "tool_result")
+    if (!results.length || !rest.some((block) => block?.type === "text" && (block.text ?? "").trim().length > 0)) {
+      continue
+    }
+
+    messages.splice(
+      i,
+      1,
+      { ...message, content: results },
+      { role: "assistant", content: TOOL_RETRY_BOUNDARY },
+      { ...message, content: rest },
+    )
+    i += 2
   }
 }
 
@@ -314,10 +351,35 @@ function userEntry(
 
 function assistantEntry(msg: Message) {
   const tu = toolUses(msg.content)
+  let reasoning: Block | undefined
+  if (typeof msg.content !== "string") {
+    // Kiro accepts one reasoning carrier per assistant message. Match KAS by replaying the last
+    // complete phase when a turn contains multiple signed thinking blocks.
+    for (const block of msg.content) {
+      if (
+        block?.type === "thinking" &&
+        typeof block.thinking === "string" &&
+        typeof block.signature === "string" &&
+        block.signature.length > 0
+      ) {
+        reasoning = block
+      }
+    }
+  }
   return {
     assistantResponseMessage: {
       content: textOf(msg.content),
       ...(tu ? { toolUses: tu } : {}),
+      ...(reasoning
+        ? {
+            reasoningContent: {
+              reasoningText: {
+                text: reasoning.thinking === OMITTED_REASONING_SENTINEL ? "" : reasoning.thinking,
+                signature: reasoning.signature,
+              },
+            },
+          }
+        : {}),
     },
   }
 }
@@ -336,6 +398,11 @@ export function toKiroRequest(
   const messages = (body.messages ?? []).map((m) => ({ ...m }))
   const tools = toolSpecs(body.tools)
 
+  // Split genuine retry text before folding the system prompt. If a history cut leaves a tool
+  // result as the first user turn, the folded system text still makes that pair malformed and the
+  // normalizer deliberately degrades it to text.
+  if (tools) splitMixedToolResultTurns(messages)
+
   const sys = systemText(body.system)
   if (sys) {
     const firstUser = messages.find((m) => m.role === "user")
@@ -347,9 +414,6 @@ export function toKiroRequest(
     }
   }
 
-  // Fold the system prompt first: after a history cut, the first surviving user turn can
-  // be a tool result. Adding system text makes that a mixed turn, which must be flattened.
-  // Keep clean tool pairs structured when tools are present; otherwise degrade them to text.
   normalizeToolBlocks(messages, Boolean(tools))
 
   // Keep images only on the most recent N image-bearing turns; strip older ones so the
@@ -434,6 +498,30 @@ export function toKiroRequest(
 }
 
 /* ---------------------------- response mapping ----------------------------- */
+
+function redactedKtrSignature(value: unknown): string | undefined {
+  if (typeof value !== "string" || value.length === 0) return undefined
+  // AWS JSON serializes blobs as base64 strings. Accepting the decoded marker only keeps arbitrary
+  // provider redacted bytes out of the Anthropic signature field.
+  const decoded = Buffer.from(value, "base64")
+  if (decoded.toString("base64").replace(/=+$/, "") !== value.replace(/=+$/, "")) return undefined
+  const signature = decoded.toString("utf8")
+  return signature.startsWith(KTR_MARKER) ? signature : undefined
+}
+
+function reasoningEventPayload(payload: Record<string, unknown>): { text?: string; signature?: string } | undefined {
+  const redactedSignature = redactedKtrSignature(payload.redactedContent)
+  if (redactedSignature) return { text: KTR_REASONING_PLACEHOLDER, signature: redactedSignature }
+
+  const text = typeof payload.text === "string" && payload.text.length > 0 ? payload.text : undefined
+  const signature =
+    typeof payload.signature === "string" && payload.signature.length > 0 ? payload.signature : undefined
+  if (!text && !signature) return undefined
+  return {
+    ...(text ? { text } : {}),
+    ...(signature ? { signature } : {}),
+  }
+}
 
 function sse(event: string, data: unknown): string {
   return `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`
@@ -560,6 +648,8 @@ export async function preflightKiroResponse(
   debug: KiroDebugContext = createKiroDebugContext(),
 ): Promise<Response> {
   const preflightStartedAt = Date.now()
+  // Hoisted so the per-event debug shapes are never computed when debugging is off.
+  const debugEnabled = kiroDebugEnabled()
   const eventTypes: Record<string, number> = {}
   let chunks = 0
   let totalBytes = 0
@@ -628,21 +718,25 @@ export async function preflightKiroResponse(
       buf = Buffer.concat([buf, Buffer.from(next.value)])
       const { events, rest } = drainKiroEvents(buf)
       buf = Buffer.from(rest)
-      kiroDebug(debug, "response.chunk", {
-        chunk: chunks,
-        bytes: next.value.byteLength,
-        totalBytes,
-        decodedEvents: events.length,
-        trailingBytes: buf.length,
-      })
+      if (debugEnabled) {
+        kiroDebug(debug, "response.chunk", {
+          chunk: chunks,
+          bytes: next.value.byteLength,
+          totalBytes,
+          decodedEvents: events.length,
+          trailingBytes: buf.length,
+        })
+      }
       for (const event of events) {
         eventCount += 1
         eventTypes[event.eventType] = (eventTypes[event.eventType] ?? 0) + 1
-        kiroDebug(debug, "response.event", {
-          sequence: eventCount,
-          eventType: event.eventType,
-          ...kiroEventShape(event),
-        })
+        if (debugEnabled) {
+          kiroDebug(debug, "response.event", {
+            sequence: eventCount,
+            eventType: event.eventType,
+            ...kiroEventShape(event),
+          })
+        }
         if (event.eventType === "metadataEvent" && typeof event.payload.stopReason === "string") {
           terminalMetadata = event.payload
         }
@@ -679,15 +773,20 @@ export async function preflightKiroResponse(
           readerOwned = false
           return replay
         }
+        const reasoning =
+          event.eventType === "reasoningContentEvent" ? reasoningEventPayload(event.payload) : undefined
         if (
           (event.eventType === "assistantResponseEvent" &&
             typeof event.payload.content === "string" &&
             event.payload.content.length > 0) ||
+          Boolean(reasoning?.text || reasoning?.signature?.startsWith(KTR_MARKER)) ||
           (event.eventType === "toolUseEvent" &&
             typeof event.payload.toolUseId === "string" &&
             event.payload.toolUseId.length > 0 &&
-            event.payload.input === undefined &&
-            event.payload.stop !== true)
+            // Output is a tool announcement (start frame) or any frame carrying input
+            // (covers complete single-frame calls). A bare stop frame is not output.
+            ((event.payload.input === undefined && event.payload.stop !== true) ||
+              (typeof event.payload.input === "string" && event.payload.input.length > 0)))
         ) {
           kiroDebug(debug, "response.output_detected", {
             eventType: event.eventType,
@@ -810,19 +909,26 @@ export function kiroToAnthropicStream(
       let currentTool: string | null = null
       let usedTool = false
       let blockOpen = false
+      let blockType: "text" | "thinking" | "tool" | null = null
+      let thinkingHasText = false
       // Kiro emits a contextUsageEvent (percentage) and meteringEvent (credits) near the
       // end of the stream. We translate the percentage into a token count for opencode's
       // gauge, and estimate output tokens from the streamed text (~4 chars/token).
       let contextPercent: number | null = null
       let outputChars = 0
+      let hasAssistantOutput = false
       let eventCount = 0
       const eventTypes: Record<string, number> = {}
+      // Hoisted so the per-event debug shapes are never computed when debugging is off.
+      const debugEnabled = kiroDebugEnabled()
       kiroDebug(debug, "sse.start", { model, contextLimit })
 
       const closeBlock = () => {
         if (!blockOpen) return
         send("content_block_stop", { type: "content_block_stop", index })
         blockOpen = false
+        blockType = null
+        thinkingHasText = false
         currentTool = null
       }
 
@@ -830,22 +936,70 @@ export function kiroToAnthropicStream(
         for await (const ev of readKiroEvents(res)) {
           eventCount += 1
           eventTypes[ev.eventType] = (eventTypes[ev.eventType] ?? 0) + 1
-          kiroDebug(debug, "sse.event", {
-            sequence: eventCount,
-            eventType: ev.eventType,
-            ...kiroEventShape(ev),
-          })
+          if (debugEnabled) {
+            kiroDebug(debug, "sse.event", {
+              sequence: eventCount,
+              eventType: ev.eventType,
+              ...kiroEventShape(ev),
+            })
+          }
           if (ev.eventType === "assistantResponseEvent") {
             const content = ev.payload.content
             if (typeof content !== "string" || content.length === 0) continue
+            hasAssistantOutput = true
             outputChars += content.length
-            if (currentTool || !blockOpen) {
+            if (blockType !== "text") {
               closeBlock()
               index += 1
               blockOpen = true
+              blockType = "text"
               send("content_block_start", { type: "content_block_start", index, content_block: { type: "text", text: "" } })
             }
             send("content_block_delta", { type: "content_block_delta", index, delta: { type: "text_delta", text: content } })
+            continue
+          }
+
+          if (ev.eventType === "reasoningContentEvent") {
+            const reasoning = reasoningEventPayload(ev.payload)
+            if (!reasoning) continue
+            const openThinking = () => {
+              if (blockType === "thinking") return
+              closeBlock()
+              index += 1
+              blockOpen = true
+              blockType = "thinking"
+              send("content_block_start", {
+                type: "content_block_start",
+                index,
+                content_block: { type: "thinking", thinking: "" },
+              })
+            }
+            if (reasoning.text) {
+              openThinking()
+              thinkingHasText = true
+              outputChars += reasoning.text.length
+              send("content_block_delta", {
+                type: "content_block_delta",
+                index,
+                delta: { type: "thinking_delta", thinking: reasoning.text },
+              })
+            }
+            if (reasoning.signature) {
+              openThinking()
+              if (!thinkingHasText) {
+                send("content_block_delta", {
+                  type: "content_block_delta",
+                  index,
+                  delta: { type: "thinking_delta", thinking: OMITTED_REASONING_SENTINEL },
+                })
+              }
+              send("content_block_delta", {
+                type: "content_block_delta",
+                index,
+                delta: { type: "signature_delta", signature: reasoning.signature },
+              })
+              closeBlock()
+            }
             continue
           }
 
@@ -854,20 +1008,23 @@ export function kiroToAnthropicStream(
             const input = ev.payload.input as string | undefined
             const stop = ev.payload.stop === true
 
-            if (id && id !== currentTool && input === undefined && !stop) {
+            // Open a block for a new tool id on its announcement frame, or on a
+            // complete single-frame call carrying input. A bare stop frame never opens one.
+            if (id && id !== currentTool && (input !== undefined || !stop)) {
               closeBlock()
               index += 1
               currentTool = id
               usedTool = true
+              hasAssistantOutput = true
               blockOpen = true
+              blockType = "tool"
               send("content_block_start", {
                 type: "content_block_start",
                 index,
                 content_block: { type: "tool_use", id, name: ev.payload.name, input: {} },
               })
-              continue
             }
-            if (typeof input === "string" && input.length > 0) {
+            if (currentTool && typeof input === "string" && input.length > 0) {
               send("content_block_delta", { type: "content_block_delta", index, delta: { type: "input_json_delta", partial_json: input } })
             }
             if (stop) closeBlock()
@@ -889,6 +1046,14 @@ export function kiroToAnthropicStream(
         }
 
         closeBlock()
+        if (!hasAssistantOutput) {
+          send("error", {
+            type: "error",
+            error: { type: "api_error", message: "Kiro closed the response stream without assistant output." },
+          })
+          kiroDebug(debug, "sse.empty_eof", { eventCount, eventTypes, contextPercent })
+          return
+        }
         const inputTokens = contextPercent != null ? Math.round((contextPercent / 100) * contextLimit) : 0
         const outputTokens = outputChars > 0 ? Math.ceil(outputChars / 4) : 0
         send("message_delta", {
