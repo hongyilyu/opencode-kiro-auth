@@ -216,6 +216,139 @@ checks.push([
     multiFrameSse.includes('"partial_json":"{\\"command\\""') &&
     multiFrameSse.includes('"stop_reason":"tool_use"'),
 ])
+// Reasoning is visible progress, but it is not a complete assistant response by itself.
+// Preflight should release it immediately; the SSE converter must still fail at EOF if no text
+// or tool call follows so OpenCode never records a successful reasoning-only turn.
+const reasoningOnlyResponse = await preflightKiroResponse(
+  chunkedResponse(
+    frame("reasoningContentEvent", { text: "working" }),
+    frame("reasoningContentEvent", { signature: "sig_1" }),
+    frame("contextUsageEvent", { contextUsagePercentage: 5 }),
+  ),
+)
+checks.push(["reasoning stream passes preflight", reasoningOnlyResponse.status === 200])
+const reasoningOnlySse = await kiroToAnthropicStream(reasoningOnlyResponse, "claude-fable-5").text()
+checks.push([
+  "reasoning stream is visible",
+  reasoningOnlySse.includes('"type":"thinking"') &&
+    reasoningOnlySse.includes('"type":"thinking_delta","thinking":"working"') &&
+    reasoningOnlySse.includes('"type":"signature_delta","signature":"sig_1"') &&
+    !reasoningOnlySse.includes('"type":"thinking_delta","thinking":" "'),
+])
+checks.push([
+  "reasoning-only EOF remains an error",
+  reasoningOnlySse.includes("Kiro closed the response stream without assistant output") &&
+    !reasoningOnlySse.includes('"type":"message_stop"'),
+])
+// With display omitted, Kiro can emit only a signature before a tool call. OpenCode ignores an
+// empty thinking block, so keep it alive with a space and map that space back to empty on replay.
+const signatureOnlyResponse = await preflightKiroResponse(
+  chunkedResponse(
+    frame("reasoningContentEvent", { signature: "sig_hidden" }),
+    frame("toolUseEvent", { toolUseId: "signed-tool", name: "bash", input: '{"command":"ls"}', stop: true }),
+  ),
+)
+checks.push(["signature-only reasoning waits for tool output", signatureOnlyResponse.status === 200])
+const signatureOnlySse = await kiroToAnthropicStream(signatureOnlyResponse, "claude-fable-5").text()
+checks.push([
+  "signature-only reasoning is retained",
+  signatureOnlySse.includes('"type":"thinking_delta","thinking":" "') &&
+    signatureOnlySse.includes('"type":"signature_delta","signature":"sig_hidden"') &&
+    signatureOnlySse.includes('"id":"signed-tool"') &&
+    signatureOnlySse.includes('"stop_reason":"tool_use"'),
+])
+const replayedHiddenReasoning = JSON.parse(
+  toKiroRequest(
+    {
+      model: "claude-fable-5",
+      messages: [
+        { role: "user", content: "first" },
+        {
+          role: "assistant",
+          content: [
+            { type: "thinking", thinking: " ", signature: "sig_hidden" },
+            { type: "tool_use", id: "signed-tool", name: "bash", input: { command: "ls" } },
+          ],
+        },
+        { role: "user", content: [{ type: "tool_result", tool_use_id: "signed-tool", content: "ok" }] },
+      ],
+      tools: [{ name: "bash", description: "d", input_schema: { type: "object" } }],
+    } as any,
+    { authorization: "Bearer t" },
+    "a",
+  ).init.body as string,
+).conversationState.history[1].assistantResponseMessage
+checks.push([
+  "signature-only reasoning replays with omitted text",
+  replayedHiddenReasoning.reasoningContent?.reasoningText?.text === "" &&
+    replayedHiddenReasoning.reasoningContent?.reasoningText?.signature === "sig_hidden",
+])
+// Native Kiro CLI receives packed turn-reconstruction state as a redactedContent blob. Convert
+// only a decoded .KTR~~ envelope to the equivalent signature carrier OpenCode can persist.
+const ktrSignature = ".KTR~~eyJ2IjoxLCJtb2RlbEhhc2giOiJ0ZXN0Iiwic2xvdHMiOltdfQ=="
+const redactedKtrResponse = await preflightKiroResponse(
+  chunkedResponse(
+    frame("reasoningContentEvent", { redactedContent: Buffer.from(ktrSignature).toString("base64") }),
+    frame("toolUseEvent", { toolUseId: "ktr-tool", name: "bash", input: "{}", stop: true }),
+  ),
+)
+checks.push(["redacted KTR reasoning passes preflight", redactedKtrResponse.status === 200])
+const redactedKtrSse = await kiroToAnthropicStream(redactedKtrResponse, "auto").text()
+checks.push([
+  "redacted KTR reasoning becomes a replayable signature",
+  redactedKtrSse.includes('"type":"thinking_delta","thinking":"..."') &&
+    redactedKtrSse.includes(`"type":"signature_delta","signature":"${ktrSignature}"`) &&
+    redactedKtrSse.includes('"id":"ktr-tool"'),
+])
+const opaqueRedactedResponse = await preflightKiroResponse(
+  chunkedResponse(frame("reasoningContentEvent", { redactedContent: Buffer.from("opaque").toString("base64") })),
+)
+checks.push([
+  "opaque redacted reasoning is not misclassified",
+  opaqueRedactedResponse.status === 502 &&
+    (await opaqueRedactedResponse.text()).includes("without assistant output"),
+])
+const reasoningThenTextResponse = await preflightKiroResponse(
+  chunkedResponse(
+    frame("reasoningContentEvent", { text: "working" }),
+    frame("reasoningContentEvent", { signature: "sig_2" }),
+    frame("assistantResponseEvent", { content: "done" }),
+  ),
+)
+const reasoningThenTextSse = await kiroToAnthropicStream(reasoningThenTextResponse, "claude-fable-5").text()
+checks.push([
+  "reasoning followed by text completes",
+  reasoningThenTextSse.includes('"type":"thinking_delta","thinking":"working"') &&
+    reasoningThenTextSse.includes('"type":"text_delta","text":"done"') &&
+    reasoningThenTextSse.includes('"type":"message_stop"') &&
+    !reasoningThenTextSse.includes("without assistant output"),
+])
+const replayedReasoning = JSON.parse(
+  toKiroRequest(
+    {
+      model: "claude-fable-5",
+      messages: [
+        { role: "user", content: "first" },
+        {
+          role: "assistant",
+          content: [
+            { type: "thinking", thinking: "working", signature: "sig_replay" },
+            { type: "text", text: "done" },
+          ],
+        },
+        { role: "user", content: "next" },
+      ],
+    } as any,
+    { authorization: "Bearer t" },
+    "a",
+  ).init.body as string,
+).conversationState.history[1].assistantResponseMessage
+checks.push([
+  "signed reasoning replays to Kiro",
+  replayedReasoning.content === "done" &&
+    replayedReasoning.reasoningContent?.reasoningText?.text === "working" &&
+    replayedReasoning.reasoningContent?.reasoningText?.signature === "sig_replay",
+])
 const filteredResponse = await preflightKiroResponse(
   chunkedResponse(
     frame("initial-response", { conversationId: "" }),
@@ -325,7 +458,8 @@ const mapped = mapKiroError(JSON.stringify({ reason: "CONTENT_LENGTH_EXCEEDS_THR
 checks.push(["overflow mapping", mapped.status === 400 && mapped.body.toLowerCase().includes("prompt is too long")])
 checks.push(["passthrough", mapKiroError("boom", 500).body === "boom"])
 
-// 10) Mixed tool_result + text turn WITH tools present: inline result, unpair tool_use.
+// 10) A manual retry can be merged into the tool-result turn by the Anthropic adapter.
+// Keep the tool protocol structured, then insert an assistant boundary before the retry.
 const mixed = JSON.parse(
   toKiroRequest(
     {
@@ -348,10 +482,19 @@ const mixed = JSON.parse(
   ).init.body as string,
 ).conversationState
 const mixedCurrent = mixed.currentMessage.userInputMessage
-const mixedPrevAsst = mixed.history[mixed.history.length - 1].assistantResponseMessage
-checks.push(["mixed turn drops structured toolResults", mixedCurrent.userInputMessageContext.toolResults === undefined])
-checks.push(["mixed turn keeps text", mixedCurrent.content.includes("Create a summary") && mixedCurrent.content.includes("shot-data")])
-checks.push(["preceding assistant unpaired", mixedPrevAsst.toolUses === undefined])
+const mixedToolUse = mixed.history.at(-3)?.assistantResponseMessage
+const mixedToolResult = mixed.history.at(-2)?.userInputMessage
+const mixedBoundary = mixed.history.at(-1)?.assistantResponseMessage
+checks.push(["mixed retry keeps structured tool use", mixedToolUse?.toolUses?.[0]?.toolUseId === "ss1"])
+checks.push(["mixed retry keeps structured tool result", mixedToolResult?.userInputMessageContext.toolResults?.[0]?.toolUseId === "ss1"])
+checks.push(["mixed retry separates result content", mixedToolResult?.content === ""])
+checks.push(["mixed retry inserts assistant boundary", typeof mixedBoundary?.content === "string" && mixedBoundary.content.length > 0])
+checks.push([
+  "mixed retry keeps current text only",
+  mixedCurrent.userInputMessageContext.toolResults === undefined &&
+    mixedCurrent.content.includes("Create a summary") &&
+    !mixedCurrent.content.includes("shot-data"),
+])
 
 // 11) Pure tool-result continuation (no text) WITH tools present stays structured.
 const pure = JSON.parse(
