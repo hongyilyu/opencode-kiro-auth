@@ -70,7 +70,7 @@ export async function* readKiroEvents(res: Response): AsyncGenerator<KiroEvent> 
       }
       buf = Buffer.concat([buf, Buffer.from(value)])
       const { events, rest } = drainKiroEvents(buf)
-      buf = rest
+      buf = Buffer.from(rest)
       for (const event of events) yield event
     }
   } finally {

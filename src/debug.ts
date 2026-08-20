@@ -26,14 +26,32 @@ export function kiroDebug(
       trace: context.id,
       elapsedMs: Date.now() - context.startedAt,
       event,
-      details,
+      details: redactDebugValue(details),
     })}`,
   )
 }
 
 export function kiroDebugError(error: unknown): { name: string; message: string } {
-  if (error instanceof Error) return { name: error.name, message: compact(error.message) }
-  return { name: typeof error, message: compact(String(error)) }
+  if (error instanceof Error) return { name: error.name, message: compact(redactKiroSecrets(error.message)) }
+  return { name: typeof error, message: compact(redactKiroSecrets(String(error))) }
+}
+
+export function redactKiroSecrets(value: string): string {
+  return value
+    .replace(/\bksk_[A-Za-z0-9._~+\/=:-]*/g, "ksk_<redacted>")
+    .replace(
+      /(\bBearer\s+)(?!(?:token|authentication|credential)\b)[^\s,;"'}\]]+/gi,
+      "$1<redacted>",
+    )
+}
+
+function redactDebugValue(value: unknown): unknown {
+  if (typeof value === "string") return redactKiroSecrets(value)
+  if (Array.isArray(value)) return value.map(redactDebugValue)
+  if (!value || typeof value !== "object") return value
+  return Object.fromEntries(
+    Object.entries(value as Record<string, unknown>).map(([key, entry]) => [key, redactDebugValue(entry)]),
+  )
 }
 
 function compact(value: string, maxLength = 500): string {

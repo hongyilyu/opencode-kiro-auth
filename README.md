@@ -12,10 +12,17 @@
 > violate the provider's Terms of Service and **could get your account suspended or
 > banned**. It is intended for personal, local use only. You assume all risk.
 
-Use Kiro models as an opencode provider with a direct AWS SSO OIDC login. The plugin
-dynamically registers its own OAuth client, runs the device flow, and stores the resulting
-credential in OpenCode's credential store. It never reads kiro-cli files, databases, or
-keychains, and kiro-cli does not need to be installed.
+Use Kiro models as opencode providers with AWS SSO OIDC or API-key authentication.
+Both providers can be configured together and selected per request:
+
+| Provider | Credential | Use with |
+| --- | --- | --- |
+| `kiro` | AWS Builder ID or IAM Identity Center device flow | `--model kiro/claude-sonnet-4.6` |
+| `kiro-api` | API key | `--model kiro-api/claude-sonnet-4.6` |
+
+For the device flows the plugin dynamically registers its own OAuth client, runs the flow,
+and stores the resulting credential in OpenCode's credential store. It never reads
+kiro-cli files, databases, or keychains, and kiro-cli does not need to be installed.
 
 ## Setup
 
@@ -43,10 +50,9 @@ refresh credentials. Run `opencode auth login --provider kiro` once after upgrad
 
 ### Credential storage
 
-The OAuth access token, refresh token, and dynamic client registration are stored as
-the `kiro` provider credential by OpenCode. Refreshes are written back through
-OpenCode's auth API. This credential is sensitive; do not share or commit OpenCode's
-auth data.
+OpenCode manages each provider's credential independently. OAuth refreshes are written
+back through OpenCode's auth API. Credentials are sensitive; do not share or commit
+OpenCode's auth data.
 
 ## Models and effort
 
@@ -63,8 +69,6 @@ without a variant selected send no effort field, leaving behavior unchanged.
 
 - `auth.ts` implements AWS SSO OIDC client registration, device authorization, and
   refresh using OpenCode-owned credentials.
-- `profile.ts` resolves the profileArn like kiro-cli: real ARN for accounts that
-  have one, else the fixed Builder-ID placeholder.
 - `transform.ts` maps the Anthropic Messages request opencode sends into Kiro's
   CodeWhisperer `GenerateAssistantResponse` request (text, tool calls, images), and
   converts the AWS event-stream response back into an Anthropic SSE stream. Before any
@@ -73,8 +77,7 @@ without a variant selected send no effort field, leaving behavior unchanged.
   a successful empty assistant turn. A terminal `CONTENT_FILTERED` event becomes a clear
   non-retryable HTTP 400, including Kiro's refusal category and recovery guidance, because
   retrying the same conversation cannot change the result.
-- `plugin.ts` registers the opencode `auth` hook whose loader returns the
-  intercepting `fetch`.
+- `plugin.ts` registers the provider auth hooks and intercepting fetches.
 
 ## Environment variables
 
@@ -102,12 +105,12 @@ recent image-bearing turns and replaces older ones with an `[image omitted]` mar
 - If a request still overflows, the error is surfaced as a context-overflow message, so
   opencode suggests starting a new session or running `/compact`.
 
-## Web search (no API key)
+## Web search
 
 The plugin also registers a `web_search` tool backed by Kiro's built-in web search,
 the same one kiro-cli uses. It runs server-side on Kiro's backend through the
-CodeWhisperer `InvokeMCP` operation, authenticated with the same OpenCode-owned login,
-so it needs no third-party search API key.
+CodeWhisperer `InvokeMCP` operation, authenticated with the same OpenCode-owned
+credential selected by the active model.
 
 - `mcp.ts` calls `InvokeMCP` (JSON-RPC `tools/call` for `web_search`) and parses the
   `{ "results": [...] }` payload.

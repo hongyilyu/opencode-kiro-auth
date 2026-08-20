@@ -1,18 +1,6 @@
-import type { ToolDefinition } from "@opencode-ai/plugin"
-import { webSearch, type AccessTokenProvider, type WebSearchResult } from "./mcp"
-
-/**
- * opencode tool definitions backed by Kiro's built-in MCP server.
- *
- * `web_search` mirrors the tool kiro-cli exposes: it runs server-side on Kiro's
- * backend (via the InvokeMCP operation) using the plugin's OpenCode-managed
- * login, so it needs no third-party search API key.
- *
- * NOTE: This module intentionally has no runtime imports from "@opencode-ai/plugin"
- * (type-only). Plugin tool args are declared as plain JSON Schema, which opencode's
- * tool registry accepts directly. This keeps the plugin loadable from a local
- * `file://` path where peer dependencies are not installed.
- */
+import type { ToolContext, ToolDefinition } from "@opencode-ai/plugin"
+import { webSearch, type WebSearchResult } from "./mcp"
+import type { KiroSession } from "./session"
 
 function formatResults(query: string, results: WebSearchResult[]): string {
   if (!results.length) {
@@ -35,11 +23,15 @@ function formatResults(query: string, results: WebSearchResult[]): string {
   ].join("\n")
 }
 
-export function createTools(getAccessToken: AccessTokenProvider): Record<string, ToolDefinition> {
+export type KiroToolContext = Pick<ToolContext, "sessionID" | "messageID" | "directory">
+
+export function createTools(
+  getSession: (context: KiroToolContext) => Promise<KiroSession>,
+): Record<string, ToolDefinition> {
   const web_search = {
     description:
       "Search the web for current, up-to-date information using Kiro's built-in web search " +
-      "(no API key required). Returns titles, URLs, and snippets. Use for recent events, " +
+      "service. Returns titles, URLs, and snippets. Use for recent events, " +
       "latest versions, pricing, or anything that may have changed since training. " +
       "Always cite sources inline as [n](url).",
     args: {
@@ -49,9 +41,9 @@ export function createTools(getAccessToken: AccessTokenProvider): Record<string,
         maxLength: 200,
       },
     },
-    async execute(args: { query: string }) {
+    async execute(args: { query: string }, context: KiroToolContext) {
       const query = String(args?.query ?? "")
-      const results = await webSearch(getAccessToken, query)
+      const results = await webSearch(await getSession(context), query)
       return {
         title: query,
         output: formatResults(query, results),

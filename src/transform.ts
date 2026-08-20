@@ -15,6 +15,7 @@ import {
   kiroDebug,
   kiroDebugEnabled,
   kiroDebugError,
+  redactKiroSecrets,
   type KiroDebugContext,
 } from "./debug"
 
@@ -324,8 +325,8 @@ function assistantEntry(msg: Message) {
 /** Map an Anthropic Messages request to a Kiro GenerateAssistantResponse request. */
 export function toKiroRequest(
   body: AnthropicRequest,
-  accessToken: string,
-  profileArn: string,
+  authHeaders: Record<string, string>,
+  profileArn: string | undefined,
   effort?: string,
   debug: KiroDebugContext = createKiroDebugContext(),
 ): { url: string; init: RequestInit } {
@@ -370,7 +371,7 @@ export function toKiroRequest(
 
   const additionalModelRequestFields = buildModelRequestFields(modelId, effort)
   const payload = {
-    profileArn,
+    ...(profileArn ? { profileArn } : {}),
     conversationState: {
       conversationId: randomUUID(),
       currentMessage: userEntry(current, modelId, tools, true, currentKeepImages),
@@ -418,7 +419,7 @@ export function toKiroRequest(
     init: {
       method: "POST",
       headers: {
-        authorization: `Bearer ${accessToken}`,
+        ...authHeaders,
         "content-type": KIRO_CONTENT_TYPE,
         "x-amz-target": KIRO_TARGET,
         "user-agent": KIRO_USER_AGENT,
@@ -465,7 +466,11 @@ function isKiroTimeoutError(event: KiroEvent): boolean {
 function kiroStreamErrorMessage(event: KiroEvent): string {
   const payload = event.payload as { message?: unknown; Message?: unknown; errorMessage?: unknown }
   const message = [payload.message, payload.Message, payload.errorMessage].find((value) => typeof value === "string")
-  return typeof message === "string" && message.length > 0 ? message : JSON.stringify(event.payload) || event.eventType
+  return redactKiroSecrets(
+    typeof message === "string" && message.length > 0
+      ? message
+      : JSON.stringify(event.payload) || event.eventType,
+  )
 }
 
 function kiroRetryAfter(res: Response, event: KiroEvent): string | undefined {
@@ -571,7 +576,7 @@ export async function preflightKiroResponse(
   let readerOwned = true
   try {
     while (true) {
-      let next: ReadableStreamReadResult<Uint8Array>
+      let next: Awaited<ReturnType<typeof reader.read>>
       try {
         next = await reader.read()
       } catch (error) {
@@ -589,7 +594,7 @@ export async function preflightKiroResponse(
         return streamErrorResponse(
           /timeout|timed out/i.test(message) ? 504 : 502,
           "api_error",
-          message,
+          redactKiroSecrets(message),
         )
       }
       if (next.done) {
@@ -622,7 +627,7 @@ export async function preflightKiroResponse(
       prefix.push(next.value)
       buf = Buffer.concat([buf, Buffer.from(next.value)])
       const { events, rest } = drainKiroEvents(buf)
-      buf = rest
+      buf = Buffer.from(rest)
       kiroDebug(debug, "response.chunk", {
         chunk: chunks,
         bytes: next.value.byteLength,
@@ -876,7 +881,10 @@ export function kiroToAnthropicStream(
           }
 
           if (ev.eventType.toLowerCase().includes("exception") || ev.eventType === "error") {
-            send("error", { type: "error", error: { type: "api_error", message: JSON.stringify(ev.payload) } })
+            send("error", {
+              type: "error",
+              error: { type: "api_error", message: redactKiroSecrets(JSON.stringify(ev.payload)) },
+            })
           }
         }
 
@@ -904,7 +912,10 @@ export function kiroToAnthropicStream(
           outputChars,
           usedTool,
         })
-        send("error", { type: "error", error: { type: "api_error", message: String(error) } })
+        send("error", {
+          type: "error",
+          error: { type: "api_error", message: redactKiroSecrets(String(error)) },
+        })
       } finally {
         controller.close()
       }
@@ -927,6 +938,7 @@ export function kiroToAnthropicStream(
  * Anthropic-style error carrying that phrase; everything else is passed through verbatim.
  */
 export function mapKiroError(detail: string, status: number): { body: string; status: number } {
+  detail = redactKiroSecrets(detail)
   let reason = ""
   let message = ""
   try {

@@ -1,5 +1,6 @@
 import { Buffer } from "node:buffer"
 import { EXPIRY_SKEW_MS } from "./constants"
+import { redactKiroSecrets } from "./debug"
 
 export const BUILDER_ID_START_URL = "https://view.awsapps.com/start"
 export const BUILDER_ID_REGION = "us-east-1"
@@ -132,7 +133,7 @@ function errorDetail(body: unknown): string {
   const data = body as Record<string, unknown>
   for (const key of ["error", "error_description", "message"]) {
     const value = data[key]
-    if (typeof value === "string" && value.length > 0) return value.slice(0, 300)
+    if (typeof value === "string" && value.length > 0) return redactKiroSecrets(value.slice(0, 300))
   }
   return ""
 }
@@ -151,7 +152,7 @@ async function postJson<T>(
       body: JSON.stringify(body),
     })
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error)
+    const message = redactKiroSecrets(error instanceof Error ? error.message : String(error))
     throw new KiroAuthError(`${operation} could not reach AWS SSO OIDC: ${message}`)
   }
 
@@ -397,10 +398,6 @@ export async function refreshOAuthCredential(
 type CredentialReader = () => Promise<unknown>
 type CredentialWriter = (credential: OAuthCredential) => Promise<void>
 
-/**
- * Reads credentials from OpenCode's auth store and persists refreshed tokens
- * through OpenCode's auth API. A single manager is shared by model and MCP calls.
- */
 export class KiroCredentialManager {
   private refreshInFlight: Promise<OAuthCredential> | undefined
 
