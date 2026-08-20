@@ -5,7 +5,6 @@ import {
   KIRO_MANAGEMENT_ENDPOINTS,
   KIRO_MGMT_USER_AGENT,
 } from "./constants"
-import { redactKiroSecrets } from "./debug"
 
 export const API_KEY_PREFIX = "ksk_"
 
@@ -31,12 +30,10 @@ export function isApiKeyCredential(value: unknown): value is ApiKeyCredential {
 export function normalizeApiKey(value: string): string {
   const key = value.trim()
   if (!key) {
-    throw new KiroApiKeyError("Kiro API key is empty.")
+    throw new KiroApiKeyError("Kiro credential is empty.")
   }
   if (!key.startsWith(API_KEY_PREFIX)) {
-    throw new KiroApiKeyError(
-      `Kiro API keys start with "${API_KEY_PREFIX}". Create one at https://app.kiro.dev under Settings -> API Keys.`,
-    )
+    throw new KiroApiKeyError("Kiro credential is invalid.")
   }
   return key
 }
@@ -51,8 +48,6 @@ export async function fetchApiKeyProfileArn(
   dependencies: ApiKeyDependencies = {},
 ): Promise<string> {
   const fetcher = dependencies.fetch ?? globalThis.fetch
-  const failures: string[] = []
-
   for (const endpoint of KIRO_MANAGEMENT_ENDPOINTS) {
     let response: Response
     try {
@@ -68,26 +63,20 @@ export async function fetchApiKeyProfileArn(
         },
         body: "{}",
       })
-    } catch (error) {
-      failures.push(`${endpoint}: ${redactKiroSecrets(error instanceof Error ? error.message : String(error))}`)
+    } catch {
       continue
     }
 
     if (!response.ok) {
-      failures.push(`${endpoint}: HTTP ${response.status}`)
       continue
     }
 
     const data = (await response.json().catch(() => null)) as { profile?: { arn?: unknown } } | null
     const arn = data?.profile?.arn
     if (typeof arn === "string" && arn.length > 0) return arn
-    failures.push(`${endpoint}: response contained no profile ARN`)
   }
 
-  throw new KiroApiKeyError(
-    `Kiro could not resolve this API key's profile via GetProfile (${failures.join("; ")}). ` +
-      "Confirm the key is active at https://app.kiro.dev under Settings -> API Keys, then retry.",
-  )
+  throw new KiroApiKeyError("Kiro could not use the configured credential. Verify it is active and try again.")
 }
 
 const PROFILE_CACHE_LIMIT = 8

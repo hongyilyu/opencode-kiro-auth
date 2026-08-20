@@ -31,7 +31,7 @@ export function createTools(
   const web_search = {
     description:
       "Search the web for current, up-to-date information using Kiro's built-in web search " +
-      "(no API key required). Returns titles, URLs, and snippets. Use for recent events, " +
+      "service. Returns titles, URLs, and snippets. Use for recent events, " +
       "latest versions, pricing, or anything that may have changed since training. " +
       "Always cite sources inline as [n](url).",
     args: {

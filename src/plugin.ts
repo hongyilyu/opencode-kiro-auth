@@ -116,7 +116,7 @@ function createKiroPlugin(providerId: string, mode: "oauth" | "api") {
             ? [
                 {
                   type: "api" as const,
-                  label: "Kiro API key (ksk_..., from app.kiro.dev)",
+                  label: "Kiro API key",
                 },
               ]
             : [

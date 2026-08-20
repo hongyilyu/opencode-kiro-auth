@@ -509,7 +509,7 @@ checks.push([
 ])
 checks.push([
   "web_search routes to api provider",
-  (await toolError("api-message")).includes("KIRO_API_KEY"),
+  (await toolError("api-message")).includes("auth login --provider kiro-api"),
 ])
 if (originalApiKey === undefined) delete process.env.KIRO_API_KEY
 else process.env.KIRO_API_KEY = originalApiKey

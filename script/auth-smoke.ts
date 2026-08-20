@@ -149,7 +149,10 @@ try {
 } catch (error) {
   badPrefix = error instanceof Error ? error.message : String(error)
 }
-checks.push(["api: rejects non-ksk key", badPrefix.includes("ksk_")])
+checks.push([
+  "api: rejects malformed key without format guidance",
+  badPrefix.includes("invalid") && !badPrefix.includes("ksk_"),
+])
 checks.push(["api: trims a valid key", normalizeApiKey(`  ${API_KEY}  `) === API_KEY])
 
 checks.push([
@@ -262,7 +265,9 @@ try {
 }
 checks.push([
   "api: reports a rejected key clearly",
-  allFailedMessage.includes("app.kiro.dev") && !allFailedMessage.includes(API_KEY),
+  allFailedMessage.includes("could not use the configured credential") &&
+    !allFailedMessage.includes("app.kiro.dev") &&
+    !allFailedMessage.includes(API_KEY),
 ])
 
 const envOnly = createSession(undefined, undefined, { mode: "api", readEnvKey: () => API_KEY })
@@ -292,8 +297,10 @@ try {
   badEnvMessage = error instanceof Error ? error.message : String(error)
 }
 checks.push([
-  "api: explains an unusable env key",
-  badEnvMessage.includes("KIRO_API_KEY") && badEnvMessage.includes("ksk_"),
+  "api: reports an unusable configured credential generically",
+  badEnvMessage.includes("configured Kiro credential is unusable") &&
+    !badEnvMessage.includes("KIRO_API_KEY") &&
+    !badEnvMessage.includes("ksk_"),
 ])
 
 let apiModeRejects = ""

@@ -12,14 +12,13 @@
 > violate the provider's Terms of Service and **could get your account suspended or
 > banned**. It is intended for personal, local use only. You assume all risk.
 
-Use Kiro models as an opencode provider with a direct AWS SSO OIDC login, or with a
-long-lived API key from the Kiro web portal. These are two separate providers, so you can
-configure both at once and pick per request:
+Use Kiro models as opencode providers with AWS SSO OIDC or API-key authentication.
+Both providers can be configured together and selected per request:
 
 | Provider | Credential | Use with |
 | --- | --- | --- |
 | `kiro` | AWS Builder ID or IAM Identity Center device flow | `--model kiro/claude-sonnet-4.6` |
-| `kiro-api` | Long-lived `ksk_...` API key | `--model kiro-api/claude-sonnet-4.6` |
+| `kiro-api` | API key | `--model kiro-api/claude-sonnet-4.6` |
 
 For the device flows the plugin dynamically registers its own OAuth client, runs the flow,
 and stores the resulting credential in OpenCode's credential store. It never reads
@@ -38,41 +37,10 @@ kiro-cli files, databases, or keychains, and kiro-cli does not need to be instal
 4. Open the displayed URL and approve the device code.
 5. Run: `opencode run "hello" --model kiro/claude-sonnet-4.6`
 
-Only one `provider` block (`kiro`) needs configuring. `kiro-api` mirrors its models
-automatically, so both providers expose the same catalog.
-
 When working from a source checkout, optional diagnostics are available:
 `bun run check-auth` verifies the configured credential end to end, and
 `bun run list-models` prints OpenCode's resolved Kiro model catalog. Neither command
 is needed when using the plugin from npm.
-
-### API key authentication (`kiro-api`)
-
-The device-flow logins expire and must be refreshed; an API key does not, which makes it
-the better fit for long-running or headless setups. Create one at
-[app.kiro.dev](https://app.kiro.dev) under **Settings -> API Keys** (the full value is
-shown only once), then:
-
-```
-opencode auth login --provider kiro-api
-opencode run "hello" --model kiro-api/claude-sonnet-4.6
-```
-
-Because `kiro` and `kiro-api` are distinct providers, each keeps its own credential:
-signing in to one never overwrites the other, and you can switch between them by changing
-the model prefix.
-
-`KIRO_API_KEY` is also honoured, matching [Kiro's headless
-mode](https://kiro.dev/docs/cli/headless/), and is used when no `kiro-api` credential is
-stored — handy in CI, where no interactive login is possible.
-
-Requires a Kiro Pro, Pro+, Pro Max, or Power subscription, and if your subscription is
-administered, API key generation must be enabled for your account. Keys are long-lived
-credentials — store them like passwords, rotate them, and revoke a compromised key in the
-portal immediately. Usage draws on the same subscription credits as an interactive login.
-
-To customize `kiro-api` (for example to expose a subset of models), add a `kiro-api`
-provider block; any field you set there takes precedence over the mirrored value.
 
 ### Migrating from 1.x
 
@@ -82,11 +50,9 @@ refresh credentials. Run `opencode auth login --provider kiro` once after upgrad
 
 ### Credential storage
 
-For the device flows, the OAuth access token, refresh token, and dynamic client
-registration are stored as the `kiro` provider credential by OpenCode, and refreshes are
-written back through OpenCode's auth API. An API key is stored as the `kiro-api`
-credential and never refreshed. Either way the credential is sensitive; do not share or
-commit OpenCode's auth data.
+OpenCode manages each provider's credential independently. OAuth refreshes are written
+back through OpenCode's auth API. Credentials are sensitive; do not share or commit
+OpenCode's auth data.
 
 ## Models and effort
 
@@ -103,16 +69,6 @@ without a variant selected send no effort field, leaving behavior unchanged.
 
 - `auth.ts` implements AWS SSO OIDC client registration, device authorization, and
   refresh using OpenCode-owned credentials.
-- `apikey.ts` implements long-lived `ksk_...` API keys: validation, the `KIRO_API_KEY`
-  fallback, the mandatory `tokentype: API_KEY` header, and profile lookup via
-  `GetProfile` (API keys cannot call `ListAvailableProfiles`).
-- `session.ts` is the seam between the two auth modes. It resolves each provider's
-  credential to a `KiroSession` exposing auth headers and a profileArn, so the request
-  and tool layers never branch on credential type or cross provider credentials.
-- `profile.ts` resolves the profileArn for the device flows like kiro-cli: real ARN for
-  accounts that have one, else the fixed Builder-ID placeholder. API keys bypass this,
-  since the backend rejects a profileArn that isn't the key's own — their chat requests
-  omit the field entirely.
 - `transform.ts` maps the Anthropic Messages request opencode sends into Kiro's
   CodeWhisperer `GenerateAssistantResponse` request (text, tool calls, images), and
   converts the AWS event-stream response back into an Anthropic SSE stream. Before any
@@ -121,18 +77,12 @@ without a variant selected send no effort field, leaving behavior unchanged.
   a successful empty assistant turn. A terminal `CONTENT_FILTERED` event becomes a clear
   non-retryable HTTP 400, including Kiro's refusal category and recovery guidance, because
   retrying the same conversation cannot change the result.
-- `plugin.ts` builds one plugin per provider from a shared factory and registers the
-  opencode `auth` hook whose loader returns the intercepting `fetch`. Two plugin functions
-  are exported — `KiroAuthPlugin` (`kiro`) and `KiroApiKeyPlugin` (`kiro-api`) — and
-  opencode's legacy plugin loader loads every exported function, so both providers come
-  from one package. The package entry point therefore intentionally exports functions only.
-  The `kiro-api` plugin also uses the `config` hook to mirror the `kiro` model catalog.
+- `plugin.ts` registers the provider auth hooks and intercepting fetches.
 
 ## Environment variables
 
 | Variable | Default | Description |
 | --- | --- | --- |
-| `KIRO_API_KEY` | Unset | Long-lived `ksk_...` key used by the `kiro-api` provider when no credential is stored for it. See [API key authentication](#api-key-authentication-kiro-api). |
 | `KIRO_RATE_LIMIT_RETRY_SECONDS` | Unset | Positive integer that overrides the retry interval for HTTP 429 and pre-output throttling responses. When unset or invalid, upstream `Retry-After` values and opencode's normal backoff are preserved. |
 | `KIRO_KEEP_IMAGE_TURNS` | `2` | Number of recent image-bearing turns retained in requests. Set to `0` to strip all images. |
 | `KIRO_DEBUG` | Unset | Set to `1` to write correlated request and event-stream diagnostics to stderr. Logs contain shapes and byte counts, not prompt text, tool output, credentials, or tokens. |
@@ -155,12 +105,12 @@ recent image-bearing turns and replaces older ones with an `[image omitted]` mar
 - If a request still overflows, the error is surfaced as a context-overflow message, so
   opencode suggests starting a new session or running `/compact`.
 
-## Web search (no API key)
+## Web search
 
 The plugin also registers a `web_search` tool backed by Kiro's built-in web search,
 the same one kiro-cli uses. It runs server-side on Kiro's backend through the
 CodeWhisperer `InvokeMCP` operation, authenticated with the same OpenCode-owned
-credential selected by the active model, so it needs no third-party search API key.
+credential selected by the active model.
 
 - `mcp.ts` calls `InvokeMCP` (JSON-RPC `tools/call` for `web_search`) and parses the
   `{ "results": [...] }` payload.
