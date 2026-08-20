@@ -1,1 +1,1 @@
-export { KiroAuthPlugin } from "./src/plugin"
+export { KiroAuthPlugin, KiroApiKeyPlugin } from "./src/plugin"

@@ -1,7 +1,7 @@
 {
   "name": "@hongyilyu/opencode-kiro-auth",
-  "version": "2.0.1",
-  "description": "Use Kiro models in opencode with direct AWS Builder ID or IAM Identity Center OAuth. Includes Claude 5, GPT 5.6, effort variants, and built-in web search.",
+  "version": "2.1.0",
+  "description": "Use Kiro models in opencode with AWS Builder ID, IAM Identity Center, or Kiro API-key authentication. Includes Claude 5, GPT 5.6, effort variants, and built-in web search.",
   "type": "module",
   "main": "./index.ts",
   "exports": {

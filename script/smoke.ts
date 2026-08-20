@@ -1,10 +1,13 @@
 // Combined regression smoke test after the release cleanup.
 import { toKiroRequest, kiroToAnthropicStream, mapKiroError, preflightKiroResponse } from "../src/transform"
-import { KiroAuthPlugin } from "../src/plugin"
+import { KiroApiKeyPlugin, KiroAuthPlugin } from "../src/plugin"
 import type { KiroDebugContext } from "../src/debug"
+import { resolveContextLimit } from "../src/limits"
 
 const checks: Array<[string, boolean]> = []
-const cur = (body: any) => JSON.parse(toKiroRequest(body, "t", "a").init.body as string).conversationState.currentMessage.userInputMessage
+
+const AUTH = { authorization: "Bearer t" }
+const cur = (body: any) => JSON.parse(toKiroRequest(body, AUTH, "a").init.body as string).conversationState.currentMessage.userInputMessage
 
 // 1) Tool-result continuation -> empty content, tool results carried in context.
 const tr = cur({
@@ -30,7 +33,7 @@ const flat = JSON.parse(
         { role: "user", content: "summarize please" },
       ],
     } as any,
-    "t",
+    AUTH,
     "a",
   ).init.body as string,
 ).conversationState
@@ -41,7 +44,7 @@ const flatHasCalledText = JSON.stringify(flat.history).includes("[called edit")
 checks.push(["no-tools flattens tool blocks", !flatHasToolStruct && flatHasCalledText])
 checks.push(["no-tools current has no toolConfig", (flat.currentMessage.userInputMessage.userInputMessageContext.tools ?? []).length === 0])
 
-// 4) Image trimming: default keep=2 across 3 image turns drops the oldest.
+// 3) Image trimming: default keep=2 across 3 image turns drops the oldest.
 delete process.env.KIRO_KEEP_IMAGE_TURNS
 const img = (d: string) => ({ type: "image", source: { type: "base64", media_type: "image/png", data: d } })
 const payload = JSON.parse(
@@ -56,7 +59,7 @@ const payload = JSON.parse(
         { role: "user", content: [{ type: "text", text: "see" }, img("NEW")] },
       ],
     } as any,
-    "t",
+    AUTH,
     "a",
   ).init.body as string,
 )
@@ -64,7 +67,7 @@ const allImgs = [...payload.conversationState.history, payload.conversationState
   .flatMap((e: any) => (e.userInputMessage?.images ?? []).map((i: any) => i.source.bytes))
 checks.push(["drops oldest image", !allImgs.includes("OLD") && allImgs.includes("MID") && allImgs.includes("NEW")])
 
-// 5) Usage from context percentage.
+// 4) Usage from context percentage.
 function frame(eventType: string, p: unknown, headerName = ":event-type"): Buffer {
   const b = Buffer.from(JSON.stringify(p)); const name = Buffer.from(headerName); const v = Buffer.from(eventType)
   const vl = Buffer.alloc(2); vl.writeUInt16BE(v.length)
@@ -94,7 +97,7 @@ const delta = out.split("\n").find((l) => l.startsWith("data:") && l.includes("m
 const usage = delta ? JSON.parse(delta.slice(5)).usage : null
 checks.push(["usage input tokens", usage?.input_tokens === 50_000])
 
-// 6) In-band throttling -> HTTP 429 so opencode's outer retry loop sees it.
+// 5) In-band throttling -> HTTP 429 so opencode's outer retry loop sees it.
 const originalRetrySeconds = process.env.KIRO_RATE_LIMIT_RETRY_SECONDS
 delete process.env.KIRO_RATE_LIMIT_RETRY_SECONDS
 const throttledFrame = frame("ThrottlingException", { message: "Rate exceeded", retryAfterSeconds: 3 }, ":exception-type")
@@ -125,7 +128,7 @@ checks.push([
 if (originalRetrySeconds === undefined) delete process.env.KIRO_RATE_LIMIT_RETRY_SECONDS
 else process.env.KIRO_RATE_LIMIT_RETRY_SECONDS = originalRetrySeconds
 
-// 7) Pre-output timeout -> retryable HTTP error, never a successful empty turn.
+// 6) Pre-output timeout -> retryable HTTP error, never a successful empty turn.
 const timedOutResponse = await preflightKiroResponse(
   chunkedResponse(frame("error", { message: "TimeoutError: The operation timed out." })),
 )
@@ -151,7 +154,7 @@ checks.push([
     (await thrownTimeoutResponse.text()).includes("TimeoutError: The operation timed out."),
 ])
 
-// 8) Metadata and empty assistant events are not model output.
+// 7) Metadata and empty assistant events are not model output.
 const emptyResponse = await preflightKiroResponse(
   chunkedResponse(
     frame("assistantResponseEvent", { content: "" }),
@@ -203,7 +206,7 @@ checks.push([
     filteredBody?.error?.message.includes("Retrying the unchanged conversation will not help"),
 ])
 
-// 9) Debug diagnostics expose request/event shapes without transcript content.
+// 8) Debug diagnostics expose request/event shapes without transcript content.
 const originalDebug = process.env.KIRO_DEBUG
 process.env.KIRO_DEBUG = "1"
 const debugLines: string[] = []
@@ -220,7 +223,7 @@ try {
         { role: "user", content: "current" },
       ],
     },
-    "SECRET_ACCESS_TOKEN",
+    { authorization: "Bearer SECRET_ACCESS_TOKEN" },
     "SECRET_PROFILE_ARN",
     undefined,
     debug,
@@ -258,7 +261,31 @@ checks.push([
     !debugOutput.includes("SECRET_PROFILE_ARN"),
 ])
 
-// 10) HTTP error mapping -> context overflow phrase.
+const recursiveDebugLines: string[] = []
+console.error = (...args: unknown[]) => recursiveDebugLines.push(args.map(String).join(" "))
+process.env.KIRO_DEBUG = "1"
+try {
+  const { kiroDebug } = await import("../src/debug")
+  kiroDebug(
+    { id: "recursive-redaction", startedAt: Date.now() },
+    "test.secret",
+    { nested: { apiKey: "ksk_must_not_log", authorization: "Bearer oauth-secret-123" } },
+  )
+} finally {
+  console.error = originalConsoleError
+  if (originalDebug === undefined) delete process.env.KIRO_DEBUG
+  else process.env.KIRO_DEBUG = originalDebug
+}
+const recursiveDebugOutput = recursiveDebugLines.join("\n")
+checks.push([
+  "debug recursively redacts credentials",
+  recursiveDebugOutput.includes("ksk_<redacted>") &&
+    recursiveDebugOutput.includes("Bearer <redacted>") &&
+    !recursiveDebugOutput.includes("must_not_log") &&
+    !recursiveDebugOutput.includes("oauth-secret-123"),
+])
+
+// 9) HTTP error mapping -> context overflow phrase.
 const mapped = mapKiroError(JSON.stringify({ reason: "CONTENT_LENGTH_EXCEEDS_THRESHOLD", message: "Input content length exceeds threshold." }), 400)
 checks.push(["overflow mapping", mapped.status === 400 && mapped.body.toLowerCase().includes("prompt is too long")])
 checks.push(["passthrough", mapKiroError("boom", 500).body === "boom"])
@@ -281,7 +308,7 @@ const mixed = JSON.parse(
         },
       ],
     } as any,
-    "t",
+    AUTH,
     "a",
   ).init.body as string,
 ).conversationState
@@ -303,7 +330,7 @@ const pure = JSON.parse(
         { role: "user", content: [{ type: "tool_result", tool_use_id: "x1", content: "out" }] },
       ],
     } as any,
-    "t",
+    AUTH,
     "a",
   ).init.body as string,
 ).conversationState
@@ -321,7 +348,7 @@ const orphan = JSON.parse(
         { role: "user", content: "what did you find?" }, // no tool_result -> orphan tool_use
       ],
     } as any,
-    "t",
+    AUTH,
     "a",
   ).init.body as string,
 ).conversationState
@@ -343,7 +370,7 @@ const systemOnResult = JSON.parse(
         { role: "user", content: "continue" },
       ],
     } as any,
-    "t",
+    AUTH,
     "a",
   ).init.body as string,
 ).conversationState
@@ -356,7 +383,7 @@ checks.push([
 
 // 13) Variant -> additionalModelRequestFields mapping (Claude vs GPT vs none).
 const fields = (model: string, effort?: string) =>
-  JSON.parse(toKiroRequest({ model, messages: [{ role: "user", content: "hi" }] } as any, "t", "a", effort).init.body as string)
+  JSON.parse(toKiroRequest({ model, messages: [{ role: "user", content: "hi" }] } as any, AUTH, "a", effort).init.body as string)
     .additionalModelRequestFields
 const claudeFields = fields("claude-fable-5", "max")
 checks.push(["claude variant -> output_config.effort", claudeFields?.output_config?.effort === "max" && claudeFields?.thinking?.type === "adaptive"])
@@ -364,7 +391,21 @@ checks.push(["gpt variant -> reasoning.effort", fields("gpt-5.6-sol", "xhigh")?.
 checks.push(["no variant -> no extra fields", fields("claude-fable-5") === undefined])
 
 // 14) Only the exact active model may expose one of its configured variants as effort.
-const hooks = await KiroAuthPlugin({} as any)
+const fakeClient = {
+  session: {
+    message: async ({ path }: any) => ({
+      data: {
+        info: {
+          role: "assistant",
+          providerID: path.messageID === "api-message" ? "kiro-api" : "kiro",
+        },
+      },
+    }),
+  },
+  auth: { set: async () => ({}) },
+} as any
+const pluginInput = { client: fakeClient } as any
+const hooks = await KiroAuthPlugin(pluginInput)
 const effortHeader = async (activeModel: string, supported: string[], selectedModel: string, variant: string) => {
   const output = { headers: {} as Record<string, string> }
   await hooks["chat.headers"]!(
@@ -383,6 +424,113 @@ const effortHeader = async (activeModel: string, supported: string[], selectedMo
 checks.push(["matching model exposes effort", (await effortHeader("gpt-5.6-sol", ["max"], "gpt-5.6-sol", "max")) === "max"])
 checks.push(["auxiliary model drops effort", (await effortHeader("claude-haiku-4.5", [], "gpt-5.6-sol", "max")) === undefined])
 checks.push(["unsupported effort dropped", (await effortHeader("claude-sonnet-5", ["low"], "claude-sonnet-5", "max")) === undefined])
+
+const originalApiKey = process.env.KIRO_API_KEY
+delete process.env.KIRO_API_KEY
+const apiHooks = await KiroApiKeyPlugin(pluginInput)
+const mirrored = async (input: any) => {
+  await apiHooks.config!(input)
+  return input.provider?.["kiro-api"]
+}
+const fromKiro = await mirrored({
+  provider: { kiro: { name: "Kiro", npm: "@ai-sdk/anthropic", models: { "claude-sonnet-4.6": {} } } },
+})
+checks.push([
+  "kiro-api inherits kiro models",
+  Object.keys(fromKiro?.models ?? {}).join() === "claude-sonnet-4.6" && fromKiro?.npm === "@ai-sdk/anthropic",
+])
+checks.push(["kiro-api gets a distinct name", fromKiro?.name === "Kiro (API key)"])
+
+const overridden = await mirrored({
+  provider: {
+    kiro: { name: "Kiro", models: { "claude-sonnet-4.6": {} } },
+    "kiro-api": { name: "Custom", models: { "claude-opus-5": {} } },
+  },
+})
+checks.push([
+  "explicit kiro-api config preserved",
+  overridden?.name === "Custom" && Object.keys(overridden?.models ?? {}).join() === "claude-opus-5",
+])
+
+const partialOverride = await mirrored({
+  provider: {
+    kiro: {
+      name: "Kiro",
+      npm: "@ai-sdk/anthropic",
+      options: { baseURL: "https://kiro.local" },
+      models: { "claude-sonnet-4.6": {} },
+    },
+    "kiro-api": { name: "Custom", options: { custom: true } },
+  },
+})
+checks.push([
+  "partial kiro-api config inherits models",
+  Object.keys(partialOverride?.models ?? {}).join() === "claude-sonnet-4.6" &&
+    partialOverride?.npm === "@ai-sdk/anthropic" &&
+    partialOverride?.options?.baseURL === "https://kiro.local" &&
+    partialOverride?.options?.custom === true &&
+    typeof partialOverride?.options?.fetch === "function" &&
+    partialOverride?.options?.apiKey === "",
+])
+
+const noSource = await mirrored({ provider: {} })
+checks.push(["no kiro block -> no kiro-api injected", noSource === undefined])
+
+const oauthLabels = (hooks.auth!.methods as any[]).map((m) => `${m.type}:${m.label}`)
+const apiLabels = (apiHooks.auth!.methods as any[]).map((m) => `${m.type}:${m.label}`)
+checks.push([
+  "kiro exposes only device flows",
+  hooks.auth!.provider === "kiro" && oauthLabels.length === 2 && oauthLabels.every((l) => l.startsWith("oauth:")),
+])
+checks.push([
+  "kiro-api exposes only the api method",
+  apiHooks.auth!.provider === "kiro-api" && apiLabels.length === 1 && apiLabels[0].startsWith("api:"),
+])
+checks.push([
+  "web_search registered once",
+  hooks.tool === undefined && Object.keys(apiHooks.tool ?? {}).join() === "web_search",
+])
+
+const webSearchTool = apiHooks.tool!.web_search
+const toolError = async (messageID: string) => {
+  try {
+    await webSearchTool.execute(
+      { query: "test" } as never,
+      { sessionID: "session", messageID, directory: "/tmp" } as never,
+    )
+    return ""
+  } catch (error) {
+    return error instanceof Error ? error.message : String(error)
+  }
+}
+checks.push([
+  "web_search routes to oauth provider",
+  (await toolError("oauth-message")).includes("provider kiro"),
+])
+checks.push([
+  "web_search routes to api provider",
+  (await toolError("api-message")).includes("KIRO_API_KEY"),
+])
+if (originalApiKey === undefined) delete process.env.KIRO_API_KEY
+else process.env.KIRO_API_KEY = originalApiKey
+
+const limitsClient = {
+  config: {
+    providers: async () => ({
+      data: {
+        providers: [
+          { id: "kiro", models: { model: { limit: { context: 111_111 } } } },
+          { id: "kiro-api", models: { model: { limit: { context: 999_999 } } } },
+        ],
+      },
+    }),
+  },
+} as any
+checks.push([
+  "context limits cached per provider",
+  (await resolveContextLimit(limitsClient, "kiro-api", "model")) === 999_999 &&
+    (await resolveContextLimit(limitsClient, "kiro", "model")) === 111_111,
+])
 
 let ok = true
 for (const [name, pass] of checks) {
