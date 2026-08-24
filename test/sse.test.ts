@@ -105,7 +105,7 @@ describe("AnthropicSseEncoder tool calls", () => {
           },
         },
       ])
-      expect(encoder.diagnostics.discardedPendingTool).toBe(1)
+      expect(encoder.debugState().discardedPendingTool).toBe(1)
     }
   })
 
@@ -165,7 +165,7 @@ describe("AnthropicSseEncoder tool calls", () => {
       content_block: { id: "call", name: "bash" },
     })
     expect(encoder.onEvent(tool("call", { input: '{"late":true}', stop: false }))).toEqual([])
-    expect(encoder.diagnostics.droppedToolFragments).toBe(1)
+    expect(encoder.debugState().droppedToolFragments).toBe(1)
   })
 
   it("discards an old pending id when a new tool begins", () => {
@@ -181,7 +181,7 @@ describe("AnthropicSseEncoder tool calls", () => {
     expect(framesOfType(frames, "content_block_delta")[0]?.data).toMatchObject({
       delta: { partial_json: '{"command":"good"}' },
     })
-    expect(encoder.diagnostics.discardedPendingTool).toBe(1)
+    expect(encoder.debugState().discardedPendingTool).toBe(1)
   })
 })
 
@@ -206,7 +206,7 @@ describe("AnthropicSseEncoder transitions", () => {
       error: { type: "api_error", message: "failed ksk_<redacted>" },
     })
     expect(encoder.terminated).toBe(true)
-    expect(encoder.diagnostics.discardedPendingTool).toBe(1)
+    expect(encoder.debugState().discardedPendingTool).toBe(1)
     expect(encoder.onEvent({ kind: "text", content: "ignored" })).toEqual([])
     expect(encoder.onEof()).toEqual([])
     expect(framesOfType(frames, "message_stop")).toHaveLength(0)
@@ -271,7 +271,7 @@ describe("AnthropicSseEncoder transitions", () => {
     expect(
       encoder.onEvent({ kind: "unknown", eventType: "futureEvent", payload: { value: 1 } }),
     ).toEqual([])
-    expect(encoder.diagnostics.unknownEventTypes).toEqual({ futureEvent: 1 })
+    expect(encoder.debugState().unknownEventTypes).toEqual({ futureEvent: 1 })
   })
 })
 

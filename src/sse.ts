@@ -1,6 +1,11 @@
 import { randomUUID } from "node:crypto"
 import { redactKiroSecrets } from "./debug"
-import { OMITTED_REASONING_SENTINEL, type KiroStreamEvent } from "./events"
+import {
+  EMPTY_TURN_ERROR_MESSAGE,
+  OMITTED_REASONING_SENTINEL,
+  completesAssistantTurn,
+  type KiroStreamEvent,
+} from "./events"
 
 export type AnthropicSseEvent = { event: string; data: Record<string, unknown> }
 
@@ -19,6 +24,9 @@ type PendingTool = {
   fragments: string[]
 }
 
+/** Encoder lifecycle: streaming, ended successfully, or ended with a terminal error frame. */
+type StreamState = "open" | "completed" | "errored"
+
 export class AnthropicSseEncoder {
   private readonly model: string
   private readonly contextLimit: number
@@ -28,17 +36,15 @@ export class AnthropicSseEncoder {
   private pendingTool: PendingTool | undefined
   private readonly emittedToolIds = new Set<string>()
   private emittedToolBlock = false
-  private hasText = false
+  // Set via completesAssistantTurn (D1) at emission time: text as it streams, tool calls only
+  // once their block was actually emitted — a discarded pending tool never completes the turn.
+  private turnCompleted = false
   private contextPercent: number | null = null
   private outputChars = 0
-  private finished = false
-  private _terminated = false
-
-  readonly diagnostics = {
-    discardedPendingTool: 0,
-    droppedToolFragments: 0,
-    unknownEventTypes: {} as Record<string, number>,
-  }
+  private state: StreamState = "open"
+  private discardedPendingTool = 0
+  private droppedToolFragments = 0
+  private unknownEventTypes: Record<string, number> = {}
 
   constructor(opts: { model: string; contextLimit: number; messageId?: string }) {
     this.model = opts.model
@@ -47,9 +53,10 @@ export class AnthropicSseEncoder {
   }
 
   get terminated(): boolean {
-    return this._terminated
+    return this.state === "errored"
   }
 
+  /** One immutable snapshot of accounting and diagnostics, for debug payloads and tests. */
   debugState(): {
     outputChars: number
     usedTool: boolean
@@ -62,14 +69,14 @@ export class AnthropicSseEncoder {
       outputChars: this.outputChars,
       usedTool: this.emittedToolBlock,
       contextPercent: this.contextPercent,
-      discardedPendingTool: this.diagnostics.discardedPendingTool,
-      droppedToolFragments: this.diagnostics.droppedToolFragments,
-      unknownEventTypes: { ...this.diagnostics.unknownEventTypes },
+      discardedPendingTool: this.discardedPendingTool,
+      droppedToolFragments: this.droppedToolFragments,
+      unknownEventTypes: { ...this.unknownEventTypes },
     }
   }
 
   begin(): AnthropicSseEvent[] {
-    if (this.finished) return []
+    if (this.state !== "open") return []
     return [
       {
         event: "message_start",
@@ -91,11 +98,11 @@ export class AnthropicSseEncoder {
   }
 
   onEvent(event: KiroStreamEvent): AnthropicSseEvent[] {
-    if (this.finished || this._terminated) return []
+    if (this.state !== "open") return []
 
     switch (event.kind) {
       case "text":
-        return this.onText(event.content)
+        return this.onText(event)
       case "reasoning":
         return this.onReasoning(event)
       case "toolUse":
@@ -106,8 +113,7 @@ export class AnthropicSseEncoder {
       case "metadata":
         return []
       case "unknown":
-        this.diagnostics.unknownEventTypes[event.eventType] =
-          (this.diagnostics.unknownEventTypes[event.eventType] ?? 0) + 1
+        this.unknownEventTypes[event.eventType] = (this.unknownEventTypes[event.eventType] ?? 0) + 1
         return []
       case "rateLimit":
       case "timeout":
@@ -117,16 +123,16 @@ export class AnthropicSseEncoder {
   }
 
   onEof(): AnthropicSseEvent[] {
-    if (this.finished || this._terminated) return []
-    this.finished = true
+    if (this.state !== "open") return []
 
     const events = this.closeBlock()
     this.discardPendingTool()
-    if (!this.hasText && !this.emittedToolBlock) {
-      this._terminated = true
-      events.push(this.errorEvent("Kiro closed the response stream without assistant output."))
+    if (!this.turnCompleted) {
+      this.state = "errored"
+      events.push(this.errorEvent(EMPTY_TURN_ERROR_MESSAGE))
       return events
     }
+    this.state = "completed"
 
     const inputTokens =
       this.contextPercent != null
@@ -150,7 +156,7 @@ export class AnthropicSseEncoder {
     return events
   }
 
-  private onText(content: string): AnthropicSseEvent[] {
+  private onText(event: Extract<KiroStreamEvent, { kind: "text" }>): AnthropicSseEvent[] {
     const events: AnthropicSseEvent[] = []
     if (this.block.kind !== "text") {
       events.push(...this.closeBlock())
@@ -165,14 +171,14 @@ export class AnthropicSseEncoder {
         },
       })
     }
-    this.hasText = true
-    this.outputChars += content.length
+    this.turnCompleted ||= completesAssistantTurn(event)
+    this.outputChars += event.content.length
     events.push({
       event: "content_block_delta",
       data: {
         type: "content_block_delta",
         index: this.index,
-        delta: { type: "text_delta", text: content },
+        delta: { type: "text_delta", text: event.content },
       },
     })
     return events
@@ -235,7 +241,7 @@ export class AnthropicSseEncoder {
 
   private onToolUse(event: Extract<KiroStreamEvent, { kind: "toolUse" }>): AnthropicSseEvent[] {
     if (this.emittedToolIds.has(event.id)) {
-      if (event.input !== undefined) this.diagnostics.droppedToolFragments += 1
+      if (event.input !== undefined) this.droppedToolFragments += 1
       return []
     }
 
@@ -247,7 +253,6 @@ export class AnthropicSseEncoder {
       if (event.stop && event.input === undefined) return []
       this.pendingTool = { id: event.id, fragments: [] }
     }
-    if (this.pendingTool.id !== event.id) return []
 
     if (this.pendingTool.name === undefined && event.name !== undefined) {
       this.pendingTool.name = event.name
@@ -283,14 +288,14 @@ export class AnthropicSseEncoder {
     )
     this.emittedToolBlock = true
     this.emittedToolIds.add(tool.id)
+    this.turnCompleted ||= completesAssistantTurn(event)
     return events
   }
 
   private onError(message: string): AnthropicSseEvent[] {
     const events = this.closeBlock()
     this.discardPendingTool()
-    this.finished = true
-    this._terminated = true
+    this.state = "errored"
     events.push(this.errorEvent(redactKiroSecrets(message)))
     return events
   }
@@ -308,7 +313,7 @@ export class AnthropicSseEncoder {
   private discardPendingTool(): void {
     if (!this.pendingTool) return
     this.pendingTool = undefined
-    this.diagnostics.discardedPendingTool += 1
+    this.discardedPendingTool += 1
   }
 
   private errorEvent(message: string): AnthropicSseEvent {

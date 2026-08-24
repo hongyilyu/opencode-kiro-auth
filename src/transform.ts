@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto"
 import { DEFAULT_MODEL, KIRO_ORIGIN } from "./constants"
 import { drainKiroEvents, readKiroEvents, type KiroEvent } from "./eventstream"
 import {
+  EMPTY_TURN_ERROR_MESSAGE,
   OMITTED_REASONING_SENTINEL,
   beginsAssistantOutput,
   parseKiroEvent,
@@ -616,11 +617,7 @@ export async function preflightKiroResponse(
             contentFilteredMessage(terminalMetadata),
           )
         }
-        return streamErrorResponse(
-          502,
-          "api_error",
-          "Kiro closed the response stream without assistant output.",
-        )
+        return streamErrorResponse(502, "api_error", EMPTY_TURN_ERROR_MESSAGE)
       }
 
       chunks += 1
@@ -801,17 +798,12 @@ export function kiroToAnthropicStream(
           const parsed = parseKiroEvent(ev)
           send(encoder.onEvent(parsed))
           if (encoder.terminated) {
-            const state = encoder.debugState()
             kiroDebug(debug, "sse.error", {
               name: parsed.kind,
               message: "message" in parsed ? parsed.message : "Kiro stream error",
               eventCount,
               eventTypes,
-              outputChars: state.outputChars,
-              usedTool: state.usedTool,
-              discardedPendingTool: state.discardedPendingTool,
-              droppedToolFragments: state.droppedToolFragments,
-              unknownEventTypes: state.unknownEventTypes,
+              ...encoder.debugState(),
             })
             break
           }
@@ -819,40 +811,18 @@ export function kiroToAnthropicStream(
 
         const terminatedByEvent = encoder.terminated
         send(encoder.onEof())
-        const state = encoder.debugState()
         if (terminatedByEvent) return
         if (encoder.terminated) {
-          kiroDebug(debug, "sse.empty_eof", {
-            eventCount,
-            eventTypes,
-            contextPercent: state.contextPercent,
-            discardedPendingTool: state.discardedPendingTool,
-            droppedToolFragments: state.droppedToolFragments,
-            unknownEventTypes: state.unknownEventTypes,
-          })
+          kiroDebug(debug, "sse.empty_eof", { eventCount, eventTypes, ...encoder.debugState() })
           return
         }
-        kiroDebug(debug, "sse.complete", {
-          eventCount,
-          eventTypes,
-          outputChars: state.outputChars,
-          usedTool: state.usedTool,
-          contextPercent: state.contextPercent,
-          discardedPendingTool: state.discardedPendingTool,
-          droppedToolFragments: state.droppedToolFragments,
-          unknownEventTypes: state.unknownEventTypes,
-        })
+        kiroDebug(debug, "sse.complete", { eventCount, eventTypes, ...encoder.debugState() })
       } catch (error) {
-        const state = encoder.debugState()
         kiroDebug(debug, "sse.error", {
           ...kiroDebugError(error),
           eventCount,
           eventTypes,
-          outputChars: state.outputChars,
-          usedTool: state.usedTool,
-          discardedPendingTool: state.discardedPendingTool,
-          droppedToolFragments: state.droppedToolFragments,
-          unknownEventTypes: state.unknownEventTypes,
+          ...encoder.debugState(),
         })
         send([
           {

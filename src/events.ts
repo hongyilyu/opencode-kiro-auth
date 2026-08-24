@@ -93,7 +93,7 @@ export function parseKiroEvent(event: KiroEvent): KiroStreamEvent {
           ...(retryAfter !== undefined ? { retryAfterSeconds: retryAfter } : {}),
         }
       }
-      if (/timeout|timed out/i.test(`${eventType} ${stringify(payload) ?? ""}`)) {
+      if (/timeout|timed out/.test(detail)) {
         return { kind: "timeout", message }
       }
       return { kind: "streamError", message }
@@ -185,6 +185,13 @@ export function parseKiroEvent(event: KiroEvent): KiroStreamEvent {
     return unknownEvent(eventType, payload)
   }
 }
+
+/**
+ * The empty-turn error message is a cross-layer contract: the SSE encoder emits it at EOF when
+ * nothing completed the turn, and preflight returns it as the 502 body for empty streams. opencode
+ * retries on it instead of recording a contentless assistant turn.
+ */
+export const EMPTY_TURN_ERROR_MESSAGE = "Kiro closed the response stream without assistant output."
 
 /** Whether preflight can safely release the stream without hiding visible model progress. */
 export function beginsAssistantOutput(event: KiroStreamEvent): boolean {

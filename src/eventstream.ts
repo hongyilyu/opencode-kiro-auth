@@ -10,8 +10,11 @@ export type KiroEvent = {
 }
 
 /**
- * Encode one Kiro event frame, mirroring the decoder below. Both CRC fields are zero because the
- * decoder deliberately ignores them; this helper is for deterministic synthetic streams.
+ * Encode one Kiro event frame, mirroring the decoder below. TEST-ONLY: both CRC fields are
+ * zeroed, so the output is NOT wire-conformant eventstream framing — any consumer that validates
+ * CRCs will reject these frames. Never send them to Kiro. They exist for deterministic synthetic
+ * streams in tests and work only because the decoder below deliberately ignores CRCs; if the
+ * decoder ever starts validating them, every stream test fails here first.
  */
 export function encodeKiroEvent(eventType: string, payload: unknown, headerName = ":event-type"): Buffer {
   const body = Buffer.from(JSON.stringify(payload))
