@@ -572,10 +572,18 @@ function kiroRetryAfter(res: Response, event: KiroEvent): string | undefined {
   return resolveRateLimitRetryAfter(upstream)
 }
 
+/**
+ * The subset of a body reader that replay needs, typed structurally: under @types/bun,
+ * `Response.body.getReader()` returns Node's `stream/web` reader interface while the global
+ * `ReadableStreamDefaultReader` is Bun's extended one (adds `readMany`), and the two are not
+ * mutually assignable.
+ */
+type BodyStreamReader = Pick<ReadableStreamDefaultReader<Uint8Array>, "read" | "releaseLock" | "cancel">
+
 function replayKiroResponse(
   res: Response,
   prefix: Uint8Array[],
-  reader?: ReadableStreamDefaultReader<Uint8Array>,
+  reader?: BodyStreamReader,
 ): Response {
   let index = 0
   let released = false

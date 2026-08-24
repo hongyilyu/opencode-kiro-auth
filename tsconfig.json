@@ -1,0 +1,25 @@
+{
+  // First typecheck gate for this package. Bun executes the TypeScript directly (no build),
+  // so this config is checking-only: noEmit, with Bun's recommended bundler-style resolution.
+  "compilerOptions": {
+    "lib": ["ESNext"],
+    "target": "ESNext",
+    "module": "Preserve",
+    "moduleResolution": "bundler",
+    "moduleDetection": "force",
+    "allowImportingTsExtensions": true,
+    "verbatimModuleSyntax": true,
+    "noEmit": true,
+
+    "strict": true,
+    "noFallthroughCasesInSwitch": true,
+    "noImplicitOverride": true,
+    "skipLibCheck": true,
+
+    // Bun runtime globals + the bun:test module.
+    "types": ["bun"]
+  },
+  // script/ is deliberately excluded: the remaining scripts there are manual, live-credential
+  // tools (check-auth, test-model, ...) and are out of scope for the CI gate.
+  "include": ["index.ts", "src/**/*", "test/**/*"]
+}

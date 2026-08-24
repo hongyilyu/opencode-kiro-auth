@@ -50,5 +50,9 @@
   },
   "peerDependencies": {
     "@opencode-ai/plugin": "*"
+  },
+  "devDependencies": {
+    "@types/bun": "1.3.13",
+    "typescript": "5.9.3"
   }
 }
