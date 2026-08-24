@@ -43,12 +43,17 @@
     "LICENSE"
   ],
   "scripts": {
-    "smoke": "bun run script/smoke.ts && bun run script/auth-smoke.ts",
+    "test": "bun test",
+    "typecheck": "tsc --noEmit",
     "check-auth": "bun run script/check-auth.ts",
     "list-models": "bun run script/list-models.ts",
     "test-model": "bun run script/test-model.ts"
   },
   "peerDependencies": {
     "@opencode-ai/plugin": "*"
+  },
+  "devDependencies": {
+    "@types/bun": "1.3.13",
+    "typescript": "5.9.3"
   }
 }
