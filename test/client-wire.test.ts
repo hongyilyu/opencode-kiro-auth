@@ -2,10 +2,11 @@ import { afterEach, describe, expect, it, mock, setSystemTime, spyOn } from "bun
 import * as crypto from "node:crypto"
 import { platform } from "node:os"
 import { fetchApiKeyProfileArn } from "../src/apikey"
+import { generateAssistantResponse } from "../src/client"
 import { invokeMcp } from "../src/mcp"
 import { getProfileArn } from "../src/profile"
 import type { KiroSession } from "../src/session"
-import { toKiroRequest } from "../src/transform"
+import { toKiroPayload } from "../src/transform"
 
 type WireCall = {
   url: string
@@ -77,40 +78,34 @@ const session = {
   async authHeaders() {
     return { authorization: `Bearer ${ACCESS_TOKEN}` }
   },
-  async profileArn() {
-    return PROFILE_ARN
-  },
   async chatProfileArn() {
     return PROFILE_ARN
   },
   async mcpProfileArn() {
     return PROFILE_ARN
   },
-  omitProfileArnInBody: false,
 } as KiroSession
 
 describe("Kiro request wire captures", () => {
-  it("captures GenerateAssistantResponse", () => {
+  it("captures GenerateAssistantResponse", async () => {
     setSystemTime(FIXED_TIME)
     spyOn(crypto, "randomUUID")
       .mockReturnValueOnce(CONVERSATION_ID)
       .mockReturnValueOnce(CONTINUATION_ID)
 
-    const request = toKiroRequest(
-      { model: "claude-sonnet-4.6", messages: [{ role: "user", content: "hello" }] },
-      { authorization: `Bearer ${ACCESS_TOKEN}` },
-      PROFILE_ARN,
-      undefined,
-      { id: DEBUG_ID, startedAt: FIXED_TIME.getTime() },
+    const debug = { id: DEBUG_ID, startedAt: FIXED_TIME.getTime() }
+    const recorder = recordingFetch()
+    await generateAssistantResponse(
+      toKiroPayload(
+        { model: "claude-sonnet-4.6", messages: [{ role: "user", content: "hello" }] },
+        undefined,
+        debug,
+      ),
+      session,
+      { debug, fetch: recorder.fetch },
     )
-    const capture: WireCall = {
-      url: request.url,
-      method: request.init.method,
-      headers: Object.fromEntries(new Headers(request.init.headers)),
-      body: typeof request.init.body === "string" ? request.init.body : undefined,
-    }
 
-    expect(capture).toEqual({
+    expect(recorder.calls[0]).toEqual({
       url: "https://runtime.us-east-1.kiro.dev/",
       method: "POST",
       headers: {

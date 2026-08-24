@@ -1,4 +1,5 @@
 import type { ToolContext, ToolDefinition } from "@opencode-ai/plugin"
+import type { KiroClientDependencies } from "./client"
 import { webSearch, type WebSearchResult } from "./mcp"
 import type { KiroSession } from "./session"
 
@@ -27,6 +28,7 @@ export type KiroToolContext = Pick<ToolContext, "sessionID" | "messageID" | "dir
 
 export function createTools(
   getSession: (context: KiroToolContext) => Promise<KiroSession>,
+  dependencies: KiroClientDependencies = {},
 ): Record<string, ToolDefinition> {
   const web_search = {
     description:
@@ -43,7 +45,7 @@ export function createTools(
     },
     async execute(args: { query: string }, context: KiroToolContext) {
       const query = String(args?.query ?? "")
-      const results = await webSearch(await getSession(context), query)
+      const results = await webSearch(await getSession(context), query, dependencies)
       return {
         title: query,
         output: formatResults(query, results),

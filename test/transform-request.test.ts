@@ -1,12 +1,10 @@
 import { describe, expect, it } from "bun:test"
-import { toKiroRequest } from "../src/transform"
+import { toKiroPayload } from "../src/transform"
 import { isolateEnv } from "./support/isolation"
 
-const AUTH = { authorization: "Bearer t" }
-
 /** Parse the conversationState Kiro would receive for an Anthropic request body. */
-function kiroPayload(body: any) {
-  return JSON.parse(toKiroRequest(body, AUTH, "a").init.body as string)
+function kiroPayload(body: any): any {
+  return toKiroPayload(body)
 }
 
 function conversationState(body: any) {
@@ -234,9 +232,8 @@ describe("reasoning replay", () => {
 // Variant -> additionalModelRequestFields mapping (Claude vs GPT vs none).
 describe("effort variant fields", () => {
   const fields = (model: string, effort?: string) =>
-    JSON.parse(
-      toKiroRequest({ model, messages: [{ role: "user", content: "hi" }] }, AUTH, "a", effort).init.body as string,
-    ).additionalModelRequestFields
+    toKiroPayload({ model, messages: [{ role: "user", content: "hi" }] }, effort)
+      .additionalModelRequestFields
 
   it("claude variant -> output_config.effort", () => {
     const claudeFields = fields("claude-fable-5", "max")

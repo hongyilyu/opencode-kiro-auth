@@ -1,11 +1,4 @@
-import { randomUUID } from "node:crypto"
-import {
-  KIRO_MCP_ENDPOINT,
-  KIRO_INVOKE_MCP_TARGET,
-  KIRO_CONTENT_TYPE,
-  KIRO_USER_AGENT,
-  KIRO_X_AMZ_USER_AGENT,
-} from "./constants"
+import { invokeMcpRequest, type KiroClientDependencies } from "./client"
 import type { KiroSession } from "./session"
 import { redactKiroSecrets } from "./debug"
 
@@ -36,27 +29,12 @@ export async function invokeMcp(
   session: KiroSession,
   method: string,
   params?: unknown,
+  dependencies: KiroClientDependencies = {},
 ): Promise<JsonRpcResult> {
-  const [authHeaders, profileArn] = await Promise.all([session.authHeaders(), session.profileArn()])
-
-  const body: Record<string, unknown> = { profileArn, jsonrpc: "2.0", id: "1", method }
+  const body: Record<string, unknown> = { jsonrpc: "2.0", id: "1", method }
   if (params !== undefined) body.params = params
 
-  const res = await fetch(KIRO_MCP_ENDPOINT, {
-    method: "POST",
-    headers: {
-      ...authHeaders,
-      "x-amzn-kiro-profile-arn": profileArn,
-      "content-type": KIRO_CONTENT_TYPE,
-      "x-amz-target": KIRO_INVOKE_MCP_TARGET,
-      "user-agent": KIRO_USER_AGENT,
-      "x-amz-user-agent": KIRO_X_AMZ_USER_AGENT,
-      "x-amzn-codewhisperer-optout": "false",
-      "amz-sdk-invocation-id": randomUUID(),
-      "amz-sdk-request": "attempt=1; max=1",
-    },
-    body: JSON.stringify(body),
-  })
+  const res = await invokeMcpRequest(body, session, dependencies)
 
   const text = await res.text()
   if (!res.ok) {
@@ -89,13 +67,16 @@ function firstText(result: JsonRpcResult): string {
 export async function webSearch(
   session: KiroSession,
   query: string,
+  dependencies: KiroClientDependencies = {},
 ): Promise<WebSearchResult[]> {
   // The backend rejects queries longer than 200 characters.
   const trimmed = query.length > 200 ? query.slice(0, 200) : query
-  const result = await invokeMcp(session, "tools/call", {
-    name: "web_search",
-    arguments: { query: trimmed },
-  })
+  const result = await invokeMcp(
+    session,
+    "tools/call",
+    { name: "web_search", arguments: { query: trimmed } },
+    dependencies,
+  )
   const text = firstText(result)
   if (!text) return []
   try {

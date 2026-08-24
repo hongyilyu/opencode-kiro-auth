@@ -1,13 +1,12 @@
 import { describe, expect, it } from "bun:test"
 import {
-  createApiKeySession,
   fetchApiKeyProfileArn,
   isApiKeyCredential,
   normalizeApiKey,
   readApiKeyFromEnv,
 } from "../src/apikey"
 import { KiroCredentialManager, type OAuthCredential } from "../src/auth"
-import { createSession } from "../src/session"
+import { createApiKeySession, createSession } from "../src/session"
 
 const API_KEY = "ksk_offlinetestkey"
 const REAL_ARN = "arn:aws:codewhisperer:us-east-1:111122223333:profile/TESTPROFILE"
@@ -72,8 +71,8 @@ describe("api key session", () => {
     expect(apiHeaders.tokentype).toBe("API_KEY")
   })
 
-  it("api: omits profileArn in chat body", () => {
-    expect(createApiKeySession(API_KEY).omitProfileArnInBody).toBe(true)
+  it("api: omits profileArn in chat body", async () => {
+    expect(await createApiKeySession(API_KEY).chatProfileArn()).toBeUndefined()
   })
 })
 
@@ -88,8 +87,8 @@ describe("api key profileArn resolution", () => {
   it("api: caches resolved profileArn", async () => {
     const { calls, fetcher } = regionFallthroughFetch()
     const cached = createApiKeySession("ksk_cachetestkey", { fetch: fetcher })
-    const cachedArns = [await cached.profileArn(), await cached.profileArn()]
-    // One resolution = two region attempts; the second profileArn() hits the cache.
+    const cachedArns = [await cached.mcpProfileArn(), await cached.mcpProfileArn()]
+    // One resolution = two region attempts; the second mcpProfileArn() hits the cache.
     expect(calls).toHaveLength(2)
     for (const arn of cachedArns) expect(arn).toBe(REAL_ARN)
   })
@@ -101,14 +100,14 @@ describe("api key profileArn resolution", () => {
         ? new Response("{}", { status: 503 })
         : new Response(JSON.stringify({ profile: { arn: REAL_ARN } }), { status: 200 })) as unknown as typeof fetch
     const flaky = createApiKeySession("ksk_flakytestkey", { fetch: flakyFetch })
-    const firstFailed = await flaky.profileArn().then(
+    const firstFailed = await flaky.mcpProfileArn().then(
       () => false,
       () => true,
     )
     outage = false
     let recovered = false
     try {
-      recovered = (await flaky.profileArn()) === REAL_ARN
+      recovered = (await flaky.mcpProfileArn()) === REAL_ARN
     } catch {
       recovered = false
     }
@@ -118,22 +117,22 @@ describe("api key profileArn resolution", () => {
 
   it("api: cache shared across sessions", async () => {
     const { calls, fetcher } = regionFallthroughFetch()
-    await createApiKeySession("ksk_sharedtestkey", { fetch: fetcher }).profileArn()
-    await createApiKeySession("ksk_sharedtestkey", { fetch: fetcher }).profileArn()
+    await createApiKeySession("ksk_sharedtestkey", { fetch: fetcher }).mcpProfileArn()
+    await createApiKeySession("ksk_sharedtestkey", { fetch: fetcher }).mcpProfileArn()
     expect(calls).toHaveLength(2)
   })
 
   it("api: cache isolated by fetch implementation", async () => {
     // Resolve the key once under one fetch instance...
     const shared = regionFallthroughFetch()
-    await createApiKeySession("ksk_isolationtestkey", { fetch: shared.fetcher }).profileArn()
+    await createApiKeySession("ksk_isolationtestkey", { fetch: shared.fetcher }).mcpProfileArn()
     // ...then prove a different fetch instance does not see that cache entry.
     let isolatedCalls = 0
     const isolatedFetch = (async () => {
       isolatedCalls++
       return new Response(JSON.stringify({ profile: { arn: `${REAL_ARN}-ISOLATED` } }), { status: 200 })
     }) as unknown as typeof fetch
-    const isolatedArn = await createApiKeySession("ksk_isolationtestkey", { fetch: isolatedFetch }).profileArn()
+    const isolatedArn = await createApiKeySession("ksk_isolationtestkey", { fetch: isolatedFetch }).mcpProfileArn()
     expect(isolatedCalls).toBe(1)
     expect(isolatedArn).toBe(`${REAL_ARN}-ISOLATED`)
   })
@@ -145,10 +144,10 @@ describe("api key profileArn resolution", () => {
       return new Response(JSON.stringify({ profile: { arn: REAL_ARN } }), { status: 200 })
     }) as unknown as typeof fetch
     for (let i = 0; i < 9; i++) {
-      await createApiKeySession(`ksk_eviction${i}`, { fetch: evictionFetch }).profileArn()
+      await createApiKeySession(`ksk_eviction${i}`, { fetch: evictionFetch }).mcpProfileArn()
     }
     // The 9th insert evicts key 0 (cache limit 8), so resolving it again refetches.
-    await createApiKeySession("ksk_eviction0", { fetch: evictionFetch }).profileArn()
+    await createApiKeySession("ksk_eviction0", { fetch: evictionFetch }).mcpProfileArn()
     expect(evictionCalls).toBe(10)
   })
 
