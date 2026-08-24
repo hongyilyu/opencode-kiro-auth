@@ -43,7 +43,8 @@
     "LICENSE"
   ],
   "scripts": {
-    "smoke": "bun run script/smoke.ts && bun run script/auth-smoke.ts",
+    "test": "bun test",
+    "typecheck": "tsc --noEmit",
     "check-auth": "bun run script/check-auth.ts",
     "list-models": "bun run script/list-models.ts",
     "test-model": "bun run script/test-model.ts"

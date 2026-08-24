@@ -59,8 +59,11 @@ jobs:
             echo "publish=true" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Run smoke tests
-        run: bun run smoke
+      - name: Typecheck
+        run: bun run typecheck
+
+      - name: Run tests
+        run: bun test
 
       - name: Verify package contents
         run: npm pack --dry-run
