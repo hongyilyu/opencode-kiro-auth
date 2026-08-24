@@ -35,10 +35,7 @@ const MANAGEMENT_USER_AGENT =
   `aws-sdk-rust/1.3.15 ua/2.1 api/codewhispererruntime/0.1.17975 os/${kiroOs} ` +
   "lang/rust/1.92.0 md/appVersion-2.18.0 app/AmazonQ-For-CLI"
 
-const realFetch = globalThis.fetch
-
 afterEach(() => {
-  globalThis.fetch = realFetch
   setSystemTime()
   mock.restore()
 })
@@ -152,9 +149,10 @@ describe("Kiro request wire captures", () => {
   it("captures InvokeMCP", async () => {
     spyOn(crypto, "randomUUID").mockReturnValueOnce(MCP_INVOCATION_ID)
     const recorder = recordingFetch(() => new Response('{"result":{}}'))
-    globalThis.fetch = recorder.fetch
 
-    await invokeMcp(session, "tools/call", { name: "web_search", arguments: { query: "wire" } })
+    await invokeMcp(session, "tools/call", { name: "web_search", arguments: { query: "wire" } }, {
+      fetch: recorder.fetch,
+    })
 
     expect(recorder.calls).toEqual([
       {

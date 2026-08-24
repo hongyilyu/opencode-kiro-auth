@@ -1,4 +1,5 @@
-import { getProfile } from "./client"
+import { getProfile, type KiroClientDependencies } from "./client"
+import { KIRO_MANAGEMENT_ENDPOINTS } from "./constants"
 
 export const API_KEY_PREFIX = "ksk_"
 
@@ -10,10 +11,6 @@ export type ApiKeyCredential = {
 }
 
 export class KiroApiKeyError extends Error {}
-
-export type ApiKeyDependencies = {
-  fetch?: typeof globalThis.fetch
-}
 
 export function isApiKeyCredential(value: unknown): value is ApiKeyCredential {
   if (!value || typeof value !== "object") return false
@@ -39,18 +36,23 @@ export function readApiKeyFromEnv(env: Record<string, string | undefined> = proc
 
 export async function fetchApiKeyProfileArn(
   key: string,
-  dependencies: ApiKeyDependencies = {},
+  dependencies: KiroClientDependencies = {},
 ): Promise<string> {
-  try {
-    const response = await getProfile(key, dependencies)
-    if (response.ok) {
-      const data = (await response.json().catch(() => null)) as { profile?: { arn?: unknown } } | null
-      const arn = data?.profile?.arn
-      if (typeof arn === "string" && arn.length > 0) return arn
+  for (const endpoint of KIRO_MANAGEMENT_ENDPOINTS) {
+    let response: Response
+    try {
+      response = await getProfile(key, endpoint, dependencies)
+    } catch {
+      continue // network failure: try the next region
     }
-  } catch {
-    // The public error deliberately does not expose endpoint or credential details.
+    if (!response.ok) continue
+
+    const data = (await response.json().catch(() => null)) as { profile?: { arn?: unknown } } | null
+    const arn = data?.profile?.arn
+    if (typeof arn === "string" && arn.length > 0) return arn
+    break // the first ok response wins, even without a usable ARN
   }
 
+  // The public error deliberately does not expose endpoint or credential details.
   throw new KiroApiKeyError("Kiro could not use the configured credential. Verify it is active and try again.")
 }

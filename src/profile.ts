@@ -1,10 +1,6 @@
 import { createHash } from "node:crypto"
-import { listAvailableProfiles } from "./client"
+import { listAvailableProfiles, type KiroClientDependencies } from "./client"
 import { KIRO_PROFILE_ARN_PLACEHOLDER } from "./constants"
-
-type ProfileDependencies = {
-  fetch?: typeof globalThis.fetch
-}
 
 const PROFILE_CACHE_LIMIT = 8
 const profileCaches = new WeakMap<typeof globalThis.fetch, Map<string, Promise<string>>>()
@@ -30,7 +26,7 @@ function tokenDigest(value: string): string {
  * Results are cached by an access-token digest, rather than globally, so changing
  * accounts cannot reuse another account's profile and the cache retains no token.
  */
-export function getProfileArn(accessToken: string, dependencies: ProfileDependencies = {}): Promise<string> {
+export function getProfileArn(accessToken: string, dependencies: KiroClientDependencies = {}): Promise<string> {
   const fetcher = dependencies.fetch ?? globalThis.fetch
   const cache = profileCache(fetcher)
   const cacheKey = tokenDigest(accessToken)

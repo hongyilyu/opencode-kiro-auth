@@ -4,7 +4,6 @@ import {
   isApiKeyCredential,
   normalizeApiKey,
   readApiKeyFromEnv,
-  type ApiKeyDependencies,
 } from "./apikey"
 import { KiroAuthError, requireOAuthCredential, type KiroCredentialManager } from "./auth"
 import type { KiroClientDependencies } from "./client"
@@ -51,7 +50,7 @@ function credentialDigest(value: string): string {
   return createHash("sha256").update(value).digest("base64url")
 }
 
-export function createApiKeySession(key: string, dependencies: ApiKeyDependencies = {}): KiroSession {
+export function createApiKeySession(key: string, dependencies: KiroClientDependencies = {}): KiroSession {
   const validated = normalizeApiKey(key)
   const fetcher = dependencies.fetch ?? globalThis.fetch
   const cache = profileCache(fetcher)
@@ -122,7 +121,7 @@ export function createSession(
   return createOAuthSession(credentials, dependencies)
 }
 
-function apiKeySessionFromEnv(envKey: string, dependencies: ApiKeyDependencies): KiroSession {
+function apiKeySessionFromEnv(envKey: string, dependencies: KiroClientDependencies): KiroSession {
   try {
     return createApiKeySession(envKey, dependencies)
   } catch (error) {

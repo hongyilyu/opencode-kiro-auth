@@ -73,16 +73,10 @@ async function providerForToolCall(input: PluginInput, context: KiroToolContext)
   return providerId
 }
 
-function createKiroPlugin(
-  providerId: string,
-  mode: "oauth" | "api",
-  dependencies: KiroClientDependencies = {},
-) {
+function createKiroPlugin(providerId: string, mode: "oauth" | "api") {
   return async function plugin(input: PluginInput): Promise<Hooks> {
     if (mode === "api") {
-      sessionReaders(input).set(providerId, async () =>
-        createSession(undefined, undefined, { mode: "api", fetch: dependencies.fetch }),
-      )
+      sessionReaders(input).set(providerId, async () => createSession(undefined, undefined, { mode: "api" }))
     }
 
     const persistCredential = async (credential: OAuthCredential) => {
@@ -98,15 +92,12 @@ function createKiroPlugin(
     return {
       tool:
         mode === "api"
-          ? createTools(
-              async (context) => readSession(input, await providerForToolCall(input, context)),
-              dependencies,
-            )
+          ? createTools(async (context) => readSession(input, await providerForToolCall(input, context)))
           : undefined,
       config: async (config) => {
         if (mode === "api") {
           mirrorProviderConfig(config, PROVIDER_ID, providerId)
-          installApiKeyEnvTransport(config, providerId, input, dependencies)
+          installApiKeyEnvTransport(config, providerId, input)
         }
       },
       "chat.headers": async (ctx, output) => {
@@ -165,17 +156,11 @@ function createKiroPlugin(
         loader: async (readCredential) => {
           const credentials = new KiroCredentialManager(readCredential, persistCredential)
           sessionReaders(input).set(providerId, async () =>
-            createSession(await readCredential(), credentials, { mode, fetch: dependencies.fetch }),
+            createSession(await readCredential(), credentials, { mode }),
           )
           return {
             apiKey: "",
-            fetch: createKiroFetch(
-              providerId,
-              mode,
-              input,
-              () => readSession(input, providerId),
-              dependencies,
-            ),
+            fetch: createKiroFetch(providerId, mode, input, () => readSession(input, providerId)),
           }
         },
       },
@@ -183,24 +168,13 @@ function createKiroPlugin(
   }
 }
 
-function installApiKeyEnvTransport(
-  config: Config,
-  providerId: string,
-  input: PluginInput,
-  dependencies: KiroClientDependencies,
-): void {
+function installApiKeyEnvTransport(config: Config, providerId: string, input: PluginInput): void {
   const provider = config.provider?.[providerId] as Record<string, any> | undefined
   if (!provider) return
   const options = { ...(provider.options ?? {}) }
   if (options.apiKey === undefined) options.apiKey = ""
   if (!options.fetch) {
-    options.fetch = createKiroFetch(
-      providerId,
-      "api",
-      input,
-      () => readSession(input, providerId),
-      dependencies,
-    )
+    options.fetch = createKiroFetch(providerId, "api", input, () => readSession(input, providerId))
   }
   provider.options = options
 }
