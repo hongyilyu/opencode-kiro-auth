@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test"
-import { kiroToAnthropicStream, preflightKiroResponse, toKiroRequest } from "../src/transform"
+import { kiroToAnthropicStream, preflightKiroResponse, toKiroPayload } from "../src/transform"
 import { kiroDebug, redactKiroSecrets, type KiroDebugContext } from "../src/debug"
 import { chunkedResponse, encodeKiroEvent } from "./support/eventstream-fixtures"
 import { captureConsoleError, isolateEnv } from "./support/isolation"
@@ -13,7 +13,7 @@ describe("debug diagnostics", () => {
   async function debugRoundTrip(): Promise<string> {
     process.env.KIRO_DEBUG = "1"
     const debug: KiroDebugContext = { id: "debug-smoke", startedAt: Date.now() }
-    toKiroRequest(
+    toKiroPayload(
       {
         model: "claude-sonnet-4.6",
         messages: [
@@ -22,8 +22,6 @@ describe("debug diagnostics", () => {
           { role: "user", content: "current" },
         ],
       },
-      { authorization: "Bearer SECRET_ACCESS_TOKEN" },
-      "SECRET_PROFILE_ARN",
       undefined,
       debug,
     )

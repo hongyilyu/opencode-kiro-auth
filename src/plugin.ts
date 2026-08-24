@@ -11,11 +11,12 @@ import {
   type OAuthCredential,
   type PendingDeviceAuthorization,
 } from "./auth"
+import { generateAssistantResponse, type KiroClientDependencies } from "./client"
 import { createSession, type KiroSession } from "./session"
-import { toKiroRequest, kiroToAnthropicStream, mapKiroError, preflightKiroResponse } from "./transform"
+import { toKiroPayload, kiroToAnthropicStream, mapKiroError, preflightKiroResponse } from "./transform"
 import { resolveContextLimit } from "./limits"
 import { createTools, type KiroToolContext } from "./tools"
-import { createKiroDebugContext, kiroDebug, kiroDebugError, redactKiroSecrets } from "./debug"
+import { createKiroDebugContext, kiroDebug, redactKiroSecrets } from "./debug"
 
 /** Internal header carrying a validated opencode variant to the fetch interceptor as Kiro effort. */
 const EFFORT_HEADER = "x-kiro-effort"
@@ -178,11 +179,12 @@ function installApiKeyEnvTransport(config: Config, providerId: string, input: Pl
   provider.options = options
 }
 
-function createKiroFetch(
+export function createKiroFetch(
   providerId: string,
   mode: "oauth" | "api",
   input: PluginInput,
   getSession: SessionReader,
+  dependencies: KiroClientDependencies = {},
 ) {
   return async function kiroFetch(_input: Parameters<typeof fetch>[0], init?: RequestInit) {
     const debug = createKiroDebugContext()
@@ -201,23 +203,8 @@ function createKiroFetch(
       toolCount: Array.isArray(body.tools) ? body.tools.length : 0,
     })
 
-    const [authHeaders, profileArn] = await Promise.all([
-      active.authHeaders(),
-      active.omitProfileArnInBody ? Promise.resolve(undefined) : active.profileArn(),
-    ])
-    kiroDebug(debug, "profile.resolved", {
-      hasProfile: Boolean(profileArn),
-      omittedInBody: active.omitProfileArnInBody,
-    })
-    const request = toKiroRequest(body, authHeaders, profileArn, effort, debug)
-    kiroDebug(debug, "request.fetch_start", { url: request.url })
-    let response: Response
-    try {
-      response = await fetch(request.url, request.init)
-    } catch (error) {
-      kiroDebug(debug, "request.fetch_error", kiroDebugError(error))
-      throw error
-    }
+    const payload = toKiroPayload(body, effort, debug)
+    const response = await generateAssistantResponse(payload, active, { debug, ...dependencies })
     kiroDebug(debug, "response.received", {
       status: response.status,
       statusText: response.statusText,

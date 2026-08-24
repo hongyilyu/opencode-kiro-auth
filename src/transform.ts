@@ -1,12 +1,7 @@
 import { randomUUID } from "node:crypto"
 import {
   DEFAULT_MODEL,
-  KIRO_ENDPOINT,
-  KIRO_TARGET,
-  KIRO_CONTENT_TYPE,
   KIRO_ORIGIN,
-  KIRO_USER_AGENT,
-  KIRO_X_AMZ_USER_AGENT,
   resolveRateLimitRetryAfter,
 } from "./constants"
 import { drainKiroEvents, readKiroEvents, type KiroEvent } from "./eventstream"
@@ -384,14 +379,12 @@ function assistantEntry(msg: Message) {
   }
 }
 
-/** Map an Anthropic Messages request to a Kiro GenerateAssistantResponse request. */
-export function toKiroRequest(
+/** Map an Anthropic Messages request to a Kiro GenerateAssistantResponse payload. */
+export function toKiroPayload(
   body: AnthropicRequest,
-  authHeaders: Record<string, string>,
-  profileArn: string | undefined,
   effort?: string,
   debug: KiroDebugContext = createKiroDebugContext(),
-): { url: string; init: RequestInit } {
+) {
   const modelId = body.model || DEFAULT_MODEL
 
   // CodeWhisperer has no system role: fold the system prompt into the first user turn.
@@ -435,7 +428,6 @@ export function toKiroRequest(
 
   const additionalModelRequestFields = buildModelRequestFields(modelId, effort)
   const payload = {
-    ...(profileArn ? { profileArn } : {}),
     conversationState: {
       conversationId: randomUUID(),
       currentMessage: userEntry(current, modelId, tools, true, currentKeepImages),
@@ -478,23 +470,7 @@ export function toKiroRequest(
     })
   }
 
-  return {
-    url: KIRO_ENDPOINT,
-    init: {
-      method: "POST",
-      headers: {
-        ...authHeaders,
-        "content-type": KIRO_CONTENT_TYPE,
-        "x-amz-target": KIRO_TARGET,
-        "user-agent": KIRO_USER_AGENT,
-        "x-amz-user-agent": KIRO_X_AMZ_USER_AGENT,
-        "x-amzn-codewhisperer-optout": "false",
-        "amz-sdk-invocation-id": debug.id,
-        "amz-sdk-request": "attempt=1; max=3",
-      },
-      body: serializedPayload,
-    },
-  }
+  return payload
 }
 
 /* ---------------------------- response mapping ----------------------------- */

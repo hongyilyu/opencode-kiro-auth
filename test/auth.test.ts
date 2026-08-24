@@ -132,13 +132,17 @@ describe("device authorization flow", () => {
       expect(decodeRefreshState(persisted()!.refresh).refreshToken).toBe("refresh-1")
     })
 
-    it("oauth: no tokentype header, keeps profileArn", async () => {
+    it("oauth: no tokentype header, resolves profileArn for chat and MCP", async () => {
       const { manager } = refreshingManager()
-      const oauthSession = createSession(credential, manager)
+      const arn = "arn:aws:codewhisperer:us-east-1:111122223333:profile/OAUTHTEST"
+      const profileFetch = (async () =>
+        new Response(JSON.stringify({ profiles: [{ arn }] }))) as unknown as typeof fetch
+      const oauthSession = createSession(credential, manager, { fetch: profileFetch })
       const oauthHeaders = await oauthSession.authHeaders()
       expect(oauthHeaders.tokentype).toBeUndefined()
       expect(oauthHeaders.authorization).toBe("Bearer access-2")
-      expect(oauthSession.omitProfileArnInBody).toBe(false)
+      expect(await oauthSession.chatProfileArn()).toBe(arn)
+      expect(await oauthSession.mcpProfileArn()).toBe(arn)
     })
   })
 })

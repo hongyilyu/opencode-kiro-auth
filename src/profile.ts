@@ -1,15 +1,6 @@
 import { createHash } from "node:crypto"
-import {
-  KIRO_MANAGEMENT_ENDPOINT,
-  KIRO_LIST_PROFILES_TARGET,
-  KIRO_CONTENT_TYPE,
-  KIRO_MGMT_USER_AGENT,
-  KIRO_PROFILE_ARN_PLACEHOLDER,
-} from "./constants"
-
-type ProfileDependencies = {
-  fetch?: typeof globalThis.fetch
-}
+import { listAvailableProfiles, type KiroClientDependencies } from "./client"
+import { KIRO_PROFILE_ARN_PLACEHOLDER } from "./constants"
 
 const PROFILE_CACHE_LIMIT = 8
 const profileCaches = new WeakMap<typeof globalThis.fetch, Map<string, Promise<string>>>()
@@ -35,7 +26,7 @@ function tokenDigest(value: string): string {
  * Results are cached by an access-token digest, rather than globally, so changing
  * accounts cannot reuse another account's profile and the cache retains no token.
  */
-export function getProfileArn(accessToken: string, dependencies: ProfileDependencies = {}): Promise<string> {
+export function getProfileArn(accessToken: string, dependencies: KiroClientDependencies = {}): Promise<string> {
   const fetcher = dependencies.fetch ?? globalThis.fetch
   const cache = profileCache(fetcher)
   const cacheKey = tokenDigest(accessToken)
@@ -53,18 +44,7 @@ export function getProfileArn(accessToken: string, dependencies: ProfileDependen
 }
 
 async function listFirstProfileArn(accessToken: string, fetcher: typeof globalThis.fetch): Promise<string> {
-  const res = await fetcher(`${KIRO_MANAGEMENT_ENDPOINT}?origin=KIRO_CLI`, {
-    method: "POST",
-    headers: {
-      authorization: `Bearer ${accessToken}`,
-      "content-type": KIRO_CONTENT_TYPE,
-      "x-amz-target": KIRO_LIST_PROFILES_TARGET,
-      "user-agent": KIRO_MGMT_USER_AGENT,
-      "x-amz-user-agent": KIRO_MGMT_USER_AGENT,
-      "x-amzn-codewhisperer-optout": "false",
-    },
-    body: "{}",
-  })
+  const res = await listAvailableProfiles(accessToken, { fetch: fetcher })
   if (!res.ok) return KIRO_PROFILE_ARN_PLACEHOLDER
   const data = (await res.json().catch(() => null)) as { profiles?: Array<{ arn?: string }> } | null
   const arn = data?.profiles?.find((p) => typeof p.arn === "string" && p.arn.length > 0)?.arn

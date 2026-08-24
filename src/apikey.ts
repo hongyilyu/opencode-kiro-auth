@@ -1,10 +1,6 @@
-import { createHash } from "node:crypto"
-import {
-  KIRO_CONTENT_TYPE,
-  KIRO_GET_PROFILE_TARGET,
-  KIRO_MANAGEMENT_ENDPOINTS,
-  KIRO_MGMT_USER_AGENT,
-} from "./constants"
+import { getProfile, type KiroClientDependencies } from "./client"
+import { KIRO_MANAGEMENT_ENDPOINTS } from "./constants"
+import { redactKiroSecrets } from "./debug"
 
 export const API_KEY_PREFIX = "ksk_"
 
@@ -16,10 +12,6 @@ export type ApiKeyCredential = {
 }
 
 export class KiroApiKeyError extends Error {}
-
-type ApiKeyDependencies = {
-  fetch?: typeof globalThis.fetch
-}
 
 export function isApiKeyCredential(value: unknown): value is ApiKeyCredential {
   if (!value || typeof value !== "object") return false
@@ -45,85 +37,33 @@ export function readApiKeyFromEnv(env: Record<string, string | undefined> = proc
 
 export async function fetchApiKeyProfileArn(
   key: string,
-  dependencies: ApiKeyDependencies = {},
+  dependencies: KiroClientDependencies = {},
 ): Promise<string> {
-  const fetcher = dependencies.fetch ?? globalThis.fetch
+  const failures: string[] = []
   for (const endpoint of KIRO_MANAGEMENT_ENDPOINTS) {
+    const region = new URL(endpoint).host
     let response: Response
     try {
-      response = await fetcher(endpoint, {
-        method: "POST",
-        headers: {
-          authorization: `Bearer ${key}`,
-          tokentype: "API_KEY",
-          "content-type": KIRO_CONTENT_TYPE,
-          "x-amz-target": KIRO_GET_PROFILE_TARGET,
-          "user-agent": KIRO_MGMT_USER_AGENT,
-          "x-amz-user-agent": KIRO_MGMT_USER_AGENT,
-        },
-        body: "{}",
-      })
-    } catch {
+      response = await getProfile(key, endpoint, dependencies)
+    } catch (error) {
+      failures.push(`${region}: ${error instanceof Error ? error.message : String(error)}`)
       continue
     }
-
     if (!response.ok) {
+      failures.push(`${region}: HTTP ${response.status}`)
       continue
     }
 
+    // An ok response can still be unusable; fall through to the next region.
     const data = (await response.json().catch(() => null)) as { profile?: { arn?: unknown } } | null
     const arn = data?.profile?.arn
     if (typeof arn === "string" && arn.length > 0) return arn
+    failures.push(`${region}: ${data === null ? "non-JSON response" : "response has no profile ARN"}`)
   }
 
-  throw new KiroApiKeyError("Kiro could not use the configured credential. Verify it is active and try again.")
-}
-
-const PROFILE_CACHE_LIMIT = 8
-const profileArnCaches = new WeakMap<typeof globalThis.fetch, Map<string, Promise<string>>>()
-
-function profileCache(fetcher: typeof globalThis.fetch): Map<string, Promise<string>> {
-  let cache = profileArnCaches.get(fetcher)
-  if (!cache) {
-    cache = new Map()
-    profileArnCaches.set(fetcher, cache)
-  }
-  return cache
-}
-
-function credentialDigest(value: string): string {
-  return createHash("sha256").update(value).digest("base64url")
-}
-
-export function createApiKeySession(key: string, dependencies: ApiKeyDependencies = {}) {
-  const validated = normalizeApiKey(key)
-  const fetcher = dependencies.fetch ?? globalThis.fetch
-  const cache = profileCache(fetcher)
-  const cacheKey = credentialDigest(validated)
-
-  return {
-    async authHeaders() {
-      return {
-        authorization: `Bearer ${validated}`,
-        tokentype: "API_KEY",
-      }
-    },
-    profileArn() {
-      const cached = cache.get(cacheKey)
-      if (cached) {
-        cache.delete(cacheKey)
-        cache.set(cacheKey, cached)
-        return cached
-      }
-
-      const pending = fetchApiKeyProfileArn(validated, { fetch: fetcher }).catch((error) => {
-        if (cache.get(cacheKey) === pending) cache.delete(cacheKey)
-        throw error
-      })
-      if (cache.size >= PROFILE_CACHE_LIMIT) cache.delete(cache.keys().next().value!)
-      cache.set(cacheKey, pending)
-      return pending
-    },
-    omitProfileArnInBody: true,
-  }
+  // Region hosts and failure reasons are safe to surface; the credential itself never is.
+  throw new KiroApiKeyError(
+    "Kiro could not use the configured credential. Verify it is active and try again. " +
+      `(${redactKiroSecrets(failures.join("; "))})`,
+  )
 }
