@@ -126,6 +126,21 @@ describe("credential-tier client seams", () => {
     ])
   })
 
+  it("falls through an ok GetProfile response without a usable ARN", async () => {
+    const urls: string[] = []
+    const fetcher = (async (input: Parameters<typeof globalThis.fetch>[0]) => {
+      urls.push(String(input))
+      if (urls.length === 1) return new Response(JSON.stringify({ profile: {} }))
+      return new Response(JSON.stringify({ profile: { arn: PROFILE_ARN } }))
+    }) as unknown as typeof globalThis.fetch
+
+    expect(await fetchApiKeyProfileArn("ksk_unusablefirstregion", { fetch: fetcher })).toBe(PROFILE_ARN)
+    expect(urls).toEqual([
+      "https://management.us-east-1.kiro.dev/",
+      "https://management.eu-central-1.kiro.dev/",
+    ])
+  })
+
   it("reports an error after both GetProfile regions reject", async () => {
     let calls = 0
     const fetcher = (async () => {
@@ -139,6 +154,37 @@ describe("credential-tier client seams", () => {
     )
     expect(calls).toBe(2)
     expect(message).toContain("could not use the configured credential")
+    expect(message).toContain("management.us-east-1.kiro.dev: HTTP 403")
+    expect(message).toContain("management.eu-central-1.kiro.dev: HTTP 403")
+  })
+
+  it("names each region's distinct failure in the error", async () => {
+    let calls = 0
+    const fetcher = (async () => {
+      calls++
+      return calls === 1 ? new Response("{}", { status: 503 }) : new Response("not json")
+    }) as unknown as typeof globalThis.fetch
+
+    const message = await fetchApiKeyProfileArn("ksk_diagnosticskey", { fetch: fetcher }).then(
+      () => "",
+      (error) => (error instanceof Error ? error.message : String(error)),
+    )
+    expect(message).toContain("management.us-east-1.kiro.dev: HTTP 503")
+    expect(message).toContain("management.eu-central-1.kiro.dev: non-JSON response")
+    // The diagnostics never include the credential.
+    expect(message).not.toContain("ksk_diagnosticskey")
+  })
+
+  it("reports an ok response that lacks a profile ARN", async () => {
+    const fetcher = (async () =>
+      new Response(JSON.stringify({ profile: {} }))) as unknown as typeof globalThis.fetch
+
+    const message = await fetchApiKeyProfileArn("ksk_noarnanywhere", { fetch: fetcher }).then(
+      () => "",
+      (error) => (error instanceof Error ? error.message : String(error)),
+    )
+    expect(message).toContain("management.us-east-1.kiro.dev: response has no profile ARN")
+    expect(message).toContain("management.eu-central-1.kiro.dev: response has no profile ARN")
   })
 
   it("maps ListAvailableProfiles failure to the placeholder", async () => {
