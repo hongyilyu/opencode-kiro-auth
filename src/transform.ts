@@ -1,10 +1,14 @@
 import { randomUUID } from "node:crypto"
-import {
-  DEFAULT_MODEL,
-  KIRO_ORIGIN,
-  resolveRateLimitRetryAfter,
-} from "./constants"
+import { DEFAULT_MODEL, KIRO_ORIGIN } from "./constants"
 import { drainKiroEvents, readKiroEvents, type KiroEvent } from "./eventstream"
+import {
+  OMITTED_REASONING_SENTINEL,
+  beginsAssistantOutput,
+  parseKiroEvent,
+  resolveRetryAfter,
+  type KiroStreamEvent,
+} from "./events"
+import { AnthropicSseEncoder, serializeSse, type AnthropicSseEvent } from "./sse"
 import {
   createKiroDebugContext,
   kiroDebug,
@@ -55,13 +59,6 @@ const ENV_STATE = {
   currentWorkingDirectory: process.cwd(),
   environmentVariables: [] as string[],
 }
-
-const KTR_MARKER = ".KTR~~"
-const KTR_REASONING_PLACEHOLDER = "..."
-// OpenCode drops an empty Anthropic thinking block before its later signature_delta arrives.
-// A single space keeps the block alive in its session; assistantEntry restores Kiro's empty
-// omitted-thinking form before replaying the signature.
-const OMITTED_REASONING_SENTINEL = " "
 
 /**
  * Format the local time exactly like kiro-cli's CONTEXT ENTRY, e.g.
@@ -475,79 +472,6 @@ export function toKiroPayload(
 
 /* ---------------------------- response mapping ----------------------------- */
 
-function redactedKtrSignature(value: unknown): string | undefined {
-  if (typeof value !== "string" || value.length === 0) return undefined
-  // AWS JSON serializes blobs as base64 strings. Accepting the decoded marker only keeps arbitrary
-  // provider redacted bytes out of the Anthropic signature field.
-  const decoded = Buffer.from(value, "base64")
-  if (decoded.toString("base64").replace(/=+$/, "") !== value.replace(/=+$/, "")) return undefined
-  const signature = decoded.toString("utf8")
-  return signature.startsWith(KTR_MARKER) ? signature : undefined
-}
-
-function reasoningEventPayload(payload: Record<string, unknown>): { text?: string; signature?: string } | undefined {
-  const redactedSignature = redactedKtrSignature(payload.redactedContent)
-  if (redactedSignature) return { text: KTR_REASONING_PLACEHOLDER, signature: redactedSignature }
-
-  const text = typeof payload.text === "string" && payload.text.length > 0 ? payload.text : undefined
-  const signature =
-    typeof payload.signature === "string" && payload.signature.length > 0 ? payload.signature : undefined
-  if (!text && !signature) return undefined
-  return {
-    ...(text ? { text } : {}),
-    ...(signature ? { signature } : {}),
-  }
-}
-
-function sse(event: string, data: unknown): string {
-  return `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`
-}
-
-function isKiroStreamError(event: KiroEvent): boolean {
-  const type = event.eventType.toLowerCase()
-  return type === "error" || type.includes("exception")
-}
-
-function isKiroRateLimitError(event: KiroEvent): boolean {
-  if (!isKiroStreamError(event)) return false
-  const detail = `${event.eventType} ${JSON.stringify(event.payload)}`.toLowerCase()
-  return (
-    detail.includes("throttl") ||
-    detail.includes("toomanyrequests") ||
-    detail.includes("too many requests") ||
-    /rate[\s_-]*limit/.test(detail) ||
-    /\brate(?:[\s_-]+limit)?[\s_-]+exceeded\b/.test(detail) ||
-    /"(?:status|statuscode|httpstatuscode)"\s*:\s*429\b/.test(detail)
-  )
-}
-
-function isKiroTimeoutError(event: KiroEvent): boolean {
-  if (!isKiroStreamError(event)) return false
-  const detail = `${event.eventType} ${JSON.stringify(event.payload)}`
-  return /timeout|timed out/i.test(detail)
-}
-
-function kiroStreamErrorMessage(event: KiroEvent): string {
-  const payload = event.payload as { message?: unknown; Message?: unknown; errorMessage?: unknown }
-  const message = [payload.message, payload.Message, payload.errorMessage].find((value) => typeof value === "string")
-  return redactKiroSecrets(
-    typeof message === "string" && message.length > 0
-      ? message
-      : JSON.stringify(event.payload) || event.eventType,
-  )
-}
-
-function kiroRetryAfter(res: Response, event: KiroEvent): string | undefined {
-  const header = res.headers.get("retry-after")
-  if (header) return resolveRateLimitRetryAfter(header)
-  const payload = event.payload as { retryAfter?: unknown; retryAfterSeconds?: unknown }
-  const value = payload.retryAfterSeconds ?? payload.retryAfter
-  let upstream: string | undefined
-  if (typeof value === "number" && Number.isFinite(value) && value >= 0) upstream = String(value)
-  if (typeof value === "string" && /^\d+(?:\.\d+)?$/.test(value)) upstream = value
-  return resolveRateLimitRetryAfter(upstream)
-}
-
 /**
  * The subset of a body reader that replay needs, typed structurally: under @types/bun,
  * `Response.body.getReader()` returns Node's `stream/web` reader interface while the global
@@ -615,11 +539,14 @@ function streamErrorResponse(status: number, type: string, message: string, head
   })
 }
 
-function rateLimitResponse(res: Response, event: KiroEvent): Response {
+function rateLimitResponse(
+  res: Response,
+  event: Extract<KiroStreamEvent, { kind: "rateLimit" }>,
+): Response {
   const headers = new Headers({ "content-type": "application/json" })
-  const retryAfter = kiroRetryAfter(res, event)
+  const retryAfter = resolveRetryAfter({ header: res.headers.get("retry-after"), event })
   if (retryAfter) headers.set("retry-after", retryAfter)
-  return streamErrorResponse(429, "rate_limit_error", kiroStreamErrorMessage(event), headers)
+  return streamErrorResponse(429, "rate_limit_error", event.message, headers)
 }
 
 /**
@@ -638,7 +565,7 @@ export async function preflightKiroResponse(
   let chunks = 0
   let totalBytes = 0
   let eventCount = 0
-  let terminalMetadata: Record<string, unknown> | undefined
+  let terminalMetadata: Extract<KiroStreamEvent, { kind: "metadata" }> | undefined
   kiroDebug(debug, "response.preflight_start", { status: res.status, hasBody: Boolean(res.body) })
   if (!res.body) {
     kiroDebug(debug, "response.body_missing", { status: res.status })
@@ -721,10 +648,9 @@ export async function preflightKiroResponse(
             ...kiroEventShape(event),
           })
         }
-        if (event.eventType === "metadataEvent" && typeof event.payload.stopReason === "string") {
-          terminalMetadata = event.payload
-        }
-        if (isKiroRateLimitError(event)) {
+        const parsed = parseKiroEvent(event)
+        if (parsed.kind === "metadata") terminalMetadata = parsed
+        if (parsed.kind === "rateLimit") {
           try {
             await reader.cancel()
           } catch {
@@ -735,11 +661,12 @@ export async function preflightKiroResponse(
           }
           kiroDebug(debug, "response.rate_limited", {
             eventType: event.eventType,
-            retryAfter: kiroRetryAfter(res, event) ?? null,
+            retryAfter:
+              resolveRetryAfter({ header: res.headers.get("retry-after"), event: parsed }) ?? null,
           })
-          return rateLimitResponse(res, event)
+          return rateLimitResponse(res, parsed)
         }
-        if (isKiroTimeoutError(event)) {
+        if (parsed.kind === "timeout") {
           try {
             await reader.cancel()
           } catch {
@@ -749,29 +676,15 @@ export async function preflightKiroResponse(
             readerOwned = false
           }
           kiroDebug(debug, "response.timed_out", { eventType: event.eventType })
-          return streamErrorResponse(504, "api_error", kiroStreamErrorMessage(event))
+          return streamErrorResponse(504, "api_error", parsed.message)
         }
-        if (isKiroStreamError(event)) {
+        if (parsed.kind === "streamError") {
           kiroDebug(debug, "response.error_passthrough", { eventType: event.eventType })
           const replay = replayKiroResponse(res, prefix, reader)
           readerOwned = false
           return replay
         }
-        const reasoning =
-          event.eventType === "reasoningContentEvent" ? reasoningEventPayload(event.payload) : undefined
-        if (
-          (event.eventType === "assistantResponseEvent" &&
-            typeof event.payload.content === "string" &&
-            event.payload.content.length > 0) ||
-          Boolean(reasoning?.text || reasoning?.signature?.startsWith(KTR_MARKER)) ||
-          (event.eventType === "toolUseEvent" &&
-            typeof event.payload.toolUseId === "string" &&
-            event.payload.toolUseId.length > 0 &&
-            // Output is a tool announcement (start frame) or any frame carrying input
-            // (covers complete single-frame calls). A bare stop frame is not output.
-            ((event.payload.input === undefined && event.payload.stop !== true) ||
-              (typeof event.payload.input === "string" && event.payload.input.length > 0)))
-        ) {
+        if (beginsAssistantOutput(parsed)) {
           kiroDebug(debug, "response.output_detected", {
             eventType: event.eventType,
             chunks,
@@ -793,19 +706,9 @@ export async function preflightKiroResponse(
   }
 }
 
-function contentFilteredMessage(metadata: Record<string, unknown>): string {
-  const refusal =
-    metadata.stopDetails && typeof metadata.stopDetails === "object"
-      ? (metadata.stopDetails as { refusal?: unknown }).refusal
-      : undefined
-  const category =
-    refusal && typeof refusal === "object" && typeof (refusal as { category?: unknown }).category === "string"
-      ? (refusal as { category: string }).category
-      : undefined
-  const explanation =
-    refusal && typeof refusal === "object" && typeof (refusal as { explanation?: unknown }).explanation === "string"
-      ? (refusal as { explanation: string }).explanation
-      : undefined
+function contentFilteredMessage(metadata: Extract<KiroStreamEvent, { kind: "metadata" }>): string {
+  const category = metadata.refusal?.category
+  const explanation = metadata.refusal?.explanation
 
   return [
     `Kiro blocked this response${category ? ` (${category})` : " because the conversation triggered its content filter"}.`,
@@ -872,49 +775,17 @@ export function kiroToAnthropicStream(
 ): Response {
   const stream = new ReadableStream<Uint8Array>({
     async start(controller) {
-      const enc = new TextEncoder()
-      const send = (event: string, data: unknown) => controller.enqueue(enc.encode(sse(event, data)))
-
-      send("message_start", {
-        type: "message_start",
-        message: {
-          id: `msg_${randomUUID().replace(/-/g, "")}`,
-          type: "message",
-          role: "assistant",
-          model,
-          content: [],
-          stop_reason: null,
-          stop_sequence: null,
-          usage: { input_tokens: 0, output_tokens: 0 },
-        },
-      })
-
-      let index = -1
-      let currentTool: string | null = null
-      let usedTool = false
-      let blockOpen = false
-      let blockType: "text" | "thinking" | "tool" | null = null
-      let thinkingHasText = false
-      // Kiro emits a contextUsageEvent (percentage) and meteringEvent (credits) near the
-      // end of the stream. We translate the percentage into a token count for opencode's
-      // gauge, and estimate output tokens from the streamed text (~4 chars/token).
-      let contextPercent: number | null = null
-      let outputChars = 0
-      let hasAssistantOutput = false
+      const textEncoder = new TextEncoder()
+      const encoder = new AnthropicSseEncoder({ model, contextLimit })
+      const send = (events: AnthropicSseEvent[]) => {
+        for (const event of events) controller.enqueue(textEncoder.encode(serializeSse(event)))
+      }
       let eventCount = 0
       const eventTypes: Record<string, number> = {}
       // Hoisted so the per-event debug shapes are never computed when debugging is off.
       const debugEnabled = kiroDebugEnabled()
+      send(encoder.begin())
       kiroDebug(debug, "sse.start", { model, contextLimit })
-
-      const closeBlock = () => {
-        if (!blockOpen) return
-        send("content_block_stop", { type: "content_block_stop", index })
-        blockOpen = false
-        blockType = null
-        thinkingHasText = false
-        currentTool = null
-      }
 
       try {
         for await (const ev of readKiroEvents(res)) {
@@ -927,144 +798,71 @@ export function kiroToAnthropicStream(
               ...kiroEventShape(ev),
             })
           }
-          if (ev.eventType === "assistantResponseEvent") {
-            const content = ev.payload.content
-            if (typeof content !== "string" || content.length === 0) continue
-            hasAssistantOutput = true
-            outputChars += content.length
-            if (blockType !== "text") {
-              closeBlock()
-              index += 1
-              blockOpen = true
-              blockType = "text"
-              send("content_block_start", { type: "content_block_start", index, content_block: { type: "text", text: "" } })
-            }
-            send("content_block_delta", { type: "content_block_delta", index, delta: { type: "text_delta", text: content } })
-            continue
-          }
-
-          if (ev.eventType === "reasoningContentEvent") {
-            const reasoning = reasoningEventPayload(ev.payload)
-            if (!reasoning) continue
-            const openThinking = () => {
-              if (blockType === "thinking") return
-              closeBlock()
-              index += 1
-              blockOpen = true
-              blockType = "thinking"
-              send("content_block_start", {
-                type: "content_block_start",
-                index,
-                content_block: { type: "thinking", thinking: "" },
-              })
-            }
-            if (reasoning.text) {
-              openThinking()
-              thinkingHasText = true
-              outputChars += reasoning.text.length
-              send("content_block_delta", {
-                type: "content_block_delta",
-                index,
-                delta: { type: "thinking_delta", thinking: reasoning.text },
-              })
-            }
-            if (reasoning.signature) {
-              openThinking()
-              if (!thinkingHasText) {
-                send("content_block_delta", {
-                  type: "content_block_delta",
-                  index,
-                  delta: { type: "thinking_delta", thinking: OMITTED_REASONING_SENTINEL },
-                })
-              }
-              send("content_block_delta", {
-                type: "content_block_delta",
-                index,
-                delta: { type: "signature_delta", signature: reasoning.signature },
-              })
-              closeBlock()
-            }
-            continue
-          }
-
-          if (ev.eventType === "toolUseEvent") {
-            const id = ev.payload.toolUseId as string
-            const input = ev.payload.input as string | undefined
-            const stop = ev.payload.stop === true
-
-            // Open a block for a new tool id on its announcement frame, or on a
-            // complete single-frame call carrying input. A bare stop frame never opens one.
-            if (id && id !== currentTool && (input !== undefined || !stop)) {
-              closeBlock()
-              index += 1
-              currentTool = id
-              usedTool = true
-              hasAssistantOutput = true
-              blockOpen = true
-              blockType = "tool"
-              send("content_block_start", {
-                type: "content_block_start",
-                index,
-                content_block: { type: "tool_use", id, name: ev.payload.name, input: {} },
-              })
-            }
-            if (currentTool && typeof input === "string" && input.length > 0) {
-              send("content_block_delta", { type: "content_block_delta", index, delta: { type: "input_json_delta", partial_json: input } })
-            }
-            if (stop) closeBlock()
-            continue
-          }
-
-          if (ev.eventType === "contextUsageEvent") {
-            const pct = (ev.payload as { contextUsagePercentage?: unknown }).contextUsagePercentage
-            if (typeof pct === "number" && Number.isFinite(pct)) contextPercent = pct
-            continue
-          }
-
-          if (ev.eventType.toLowerCase().includes("exception") || ev.eventType === "error") {
-            send("error", {
-              type: "error",
-              error: { type: "api_error", message: redactKiroSecrets(JSON.stringify(ev.payload)) },
+          const parsed = parseKiroEvent(ev)
+          send(encoder.onEvent(parsed))
+          if (encoder.terminated) {
+            const state = encoder.debugState()
+            kiroDebug(debug, "sse.error", {
+              name: parsed.kind,
+              message: "message" in parsed ? parsed.message : "Kiro stream error",
+              eventCount,
+              eventTypes,
+              outputChars: state.outputChars,
+              usedTool: state.usedTool,
+              discardedPendingTool: state.discardedPendingTool,
+              droppedToolFragments: state.droppedToolFragments,
+              unknownEventTypes: state.unknownEventTypes,
             })
+            break
           }
         }
 
-        closeBlock()
-        if (!hasAssistantOutput) {
-          send("error", {
-            type: "error",
-            error: { type: "api_error", message: "Kiro closed the response stream without assistant output." },
+        const terminatedByEvent = encoder.terminated
+        send(encoder.onEof())
+        const state = encoder.debugState()
+        if (terminatedByEvent) return
+        if (encoder.terminated) {
+          kiroDebug(debug, "sse.empty_eof", {
+            eventCount,
+            eventTypes,
+            contextPercent: state.contextPercent,
+            discardedPendingTool: state.discardedPendingTool,
+            droppedToolFragments: state.droppedToolFragments,
+            unknownEventTypes: state.unknownEventTypes,
           })
-          kiroDebug(debug, "sse.empty_eof", { eventCount, eventTypes, contextPercent })
           return
         }
-        const inputTokens = contextPercent != null ? Math.round((contextPercent / 100) * contextLimit) : 0
-        const outputTokens = outputChars > 0 ? Math.ceil(outputChars / 4) : 0
-        send("message_delta", {
-          type: "message_delta",
-          delta: { stop_reason: usedTool ? "tool_use" : "end_turn", stop_sequence: null },
-          usage: { input_tokens: inputTokens, output_tokens: outputTokens },
-        })
-        send("message_stop", { type: "message_stop" })
         kiroDebug(debug, "sse.complete", {
           eventCount,
           eventTypes,
-          outputChars,
-          usedTool,
-          contextPercent,
+          outputChars: state.outputChars,
+          usedTool: state.usedTool,
+          contextPercent: state.contextPercent,
+          discardedPendingTool: state.discardedPendingTool,
+          droppedToolFragments: state.droppedToolFragments,
+          unknownEventTypes: state.unknownEventTypes,
         })
       } catch (error) {
+        const state = encoder.debugState()
         kiroDebug(debug, "sse.error", {
           ...kiroDebugError(error),
           eventCount,
           eventTypes,
-          outputChars,
-          usedTool,
+          outputChars: state.outputChars,
+          usedTool: state.usedTool,
+          discardedPendingTool: state.discardedPendingTool,
+          droppedToolFragments: state.droppedToolFragments,
+          unknownEventTypes: state.unknownEventTypes,
         })
-        send("error", {
-          type: "error",
-          error: { type: "api_error", message: redactKiroSecrets(String(error)) },
-        })
+        send([
+          {
+            event: "error",
+            data: {
+              type: "error",
+              error: { type: "api_error", message: redactKiroSecrets(String(error)) },
+            },
+          },
+        ])
       } finally {
         controller.close()
       }
