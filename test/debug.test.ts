@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test"
-import { kiroToAnthropicStream, preflightKiroResponse, toKiroPayload } from "../src/transform"
+import { kiroResponseToAnthropic, toKiroPayload } from "../src/transform"
 import { kiroDebug, redactKiroSecrets, type KiroDebugContext } from "../src/debug"
 import { chunkedResponse, encodeKiroEvent } from "./support/eventstream-fixtures"
 import { captureConsoleError, isolateEnv } from "./support/isolation"
@@ -9,7 +9,7 @@ describe("debug diagnostics", () => {
   isolateEnv("KIRO_DEBUG")
   const captured = captureConsoleError()
 
-  /** Run a full request -> preflight -> SSE round trip with KIRO_DEBUG on, returning the log. */
+  /** Run a full request and response round trip with KIRO_DEBUG on, returning the log. */
   async function debugRoundTrip(): Promise<string> {
     process.env.KIRO_DEBUG = "1"
     const debug: KiroDebugContext = { id: "debug-smoke", startedAt: Date.now() }
@@ -25,15 +25,15 @@ describe("debug diagnostics", () => {
       undefined,
       debug,
     )
-    const debugResponse = await preflightKiroResponse(
+    const debugResponse = await kiroResponseToAnthropic(
       chunkedResponse(
         encodeKiroEvent("assistantResponseEvent", { content: "SECRET_MODEL_OUTPUT" }),
         encodeKiroEvent("metadataEvent", { stopReason: "end_turn" }),
         encodeKiroEvent("contextUsageEvent", { contextUsagePercentage: 7 }),
       ),
-      debug,
+      { model: "claude-sonnet-4.6", contextLimit: 1_000_000, debug },
     )
-    await kiroToAnthropicStream(debugResponse, "claude-sonnet-4.6", 1_000_000, debug).text()
+    await debugResponse.text()
     return captured.lines.join("\n")
   }
 

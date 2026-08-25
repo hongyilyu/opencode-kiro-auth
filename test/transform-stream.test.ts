@@ -2,19 +2,25 @@ import { describe, expect, it } from "bun:test"
 import type { PluginInput } from "@opencode-ai/plugin"
 import { createKiroFetch } from "../src/plugin"
 import type { KiroSession } from "../src/session"
-import { kiroToAnthropicStream, mapKiroError, preflightKiroResponse } from "../src/transform"
+import { kiroResponseToAnthropic, mapKiroError } from "../src/transform"
 import { chunkedResponse, encodeKiroEvent } from "./support/eventstream-fixtures"
 import { isolateEnv } from "./support/isolation"
 
-/** Preflight a synthetic Kiro event stream built from the given frames. */
+/** Convert a synthetic Kiro event stream built from the given frames. */
 function preflight(...frames: Uint8Array[]): Promise<Response> {
-  return preflightKiroResponse(chunkedResponse(...frames))
+  return kiroResponseToAnthropic(chunkedResponse(...frames), {
+    model: "claude-sonnet-4.6",
+    contextLimit: 1_000_000,
+  })
 }
 
-/** Preflight then convert to the Anthropic SSE text a client would receive. */
+/** Convert synthetic Kiro frames to the Anthropic SSE text a client would receive. */
 async function streamedSse(model: string, ...frames: Uint8Array[]): Promise<string> {
-  const prepared = await preflight(...frames)
-  return kiroToAnthropicStream(prepared, model).text()
+  const response = await kiroResponseToAnthropic(chunkedResponse(...frames), {
+    model,
+    contextLimit: 1_000_000,
+  })
+  return response.text()
 }
 
 async function errorBody(res: Response): Promise<{ error?: { type?: string; message?: string } }> {
@@ -34,6 +40,75 @@ function parseSse(value: string): ParsedSseFrame[] {
         data: JSON.parse(lines.find((line) => line.startsWith("data: "))?.slice(6) ?? "{}"),
       }
     })
+}
+
+function expectEventStream(response: Response): void {
+  expect(response.status).toBe(200)
+  expect(response.headers.get("content-type")).toBe("text/event-stream")
+}
+
+function expectTerminalError(frames: ParsedSseFrame[]): void {
+  expect(frames.filter((frame) => frame.event === "error")).toHaveLength(1)
+  expect(frames.some((frame) => frame.data.type === "message_stop")).toBe(false)
+}
+
+type ReaderStep = Uint8Array | Error | "wait" | "wait-error" | "eof"
+
+function steppedResponse(...initialSteps: ReaderStep[]) {
+  const steps = [...initialSteps]
+  let reads = 0
+  let cancels = 0
+  let releases = 0
+  let cancelReason: unknown
+  let finishPendingRead: (() => void) | undefined
+  let failPendingRead: (() => void) | undefined
+  let cancelWait: Promise<void> | undefined
+  let resolveReleased!: () => void
+  const released = new Promise<void>((resolve) => {
+    resolveReleased = resolve
+  })
+
+  const reader = {
+    async read(): Promise<{ done: boolean; value?: Uint8Array }> {
+      reads += 1
+      const step = steps.shift() ?? "eof"
+      if (step instanceof Error) throw step
+      if (step === "wait" || step === "wait-error") {
+        return new Promise((resolve, reject) => {
+          finishPendingRead = () => resolve({ done: true })
+          if (step === "wait-error") failPendingRead = () => reject(new Error("read aborted"))
+        })
+      }
+      if (step === "eof") return { done: true }
+      return { done: false, value: step }
+    },
+    async cancel(reason?: unknown): Promise<void> {
+      cancels += 1
+      cancelReason = reason
+      if (failPendingRead) failPendingRead()
+      else finishPendingRead?.()
+      finishPendingRead = undefined
+      failPendingRead = undefined
+      await cancelWait
+    },
+    releaseLock(): void {
+      releases += 1
+      resolveReleased()
+    },
+  }
+
+  return {
+    response: {
+      status: 200,
+      headers: new Headers({ "content-type": "application/vnd.amazon.eventstream" }),
+      body: { getReader: () => reader },
+    } as unknown as Response,
+    stats: () => ({ reads, cancels, releases, cancelReason, remainingSteps: steps.length }),
+    released,
+    holdCancellation: () => {
+      cancelWait = new Promise(() => {})
+    },
+  }
 }
 
 async function fullPipeline(...chunks: Uint8Array[]): Promise<Response> {
@@ -95,12 +170,11 @@ describe("usage reporting", () => {
 
   it("successful stream preflight", async () => {
     const prepared = await preflight(...successFrames())
-    expect(prepared.status).toBe(200)
+    expectEventStream(prepared)
   })
 
   it("usage input tokens", async () => {
-    const prepared = await preflight(...successFrames())
-    const out = await kiroToAnthropicStream(prepared, "claude-sonnet-4.6", 1_000_000).text()
+    const out = await streamedSse("claude-sonnet-4.6", ...successFrames())
     const delta = out.split("\n").find((l) => l.startsWith("data:") && l.includes("message_delta"))
     expect(delta).toBeDefined()
     const usage = JSON.parse(delta!.slice(5)).usage
@@ -120,8 +194,9 @@ describe("in-band throttling", () => {
       ":exception-type",
     )
     // Split mid-frame to exercise partial-frame buffering in the preflight reader.
-    const mapped = await preflightKiroResponse(
+    const mapped = await kiroResponseToAnthropic(
       chunkedResponse(throttledFrame.subarray(0, 9), throttledFrame.subarray(9)),
+      { model: "claude-sonnet-4.6", contextLimit: 1_000_000 },
     )
     expect(mapped.status).toBe(429)
     expect(mapped.headers.get("retry-after")).toBe("3")
@@ -154,7 +229,7 @@ describe("pre-output timeouts", () => {
   })
 
   it("transport timeout mapping", async () => {
-    const res = await preflightKiroResponse(
+    const res = await kiroResponseToAnthropic(
       new Response(
         new ReadableStream<Uint8Array>({
           start(controller) {
@@ -162,6 +237,7 @@ describe("pre-output timeouts", () => {
           },
         }),
       ),
+      { model: "claude-sonnet-4.6", contextLimit: 1_000_000 },
     )
     expect(res.status).toBe(504)
     expect(await res.text()).toContain("TimeoutError: The operation timed out.")
@@ -183,7 +259,10 @@ describe("empty streams", () => {
   })
 
   it("bodyless response mapping", async () => {
-    const res = await preflightKiroResponse(new Response(null))
+    const res = await kiroResponseToAnthropic(new Response(null), {
+      model: "claude-sonnet-4.6",
+      contextLimit: 1_000_000,
+    })
     expect(res.status).toBe(502)
     expect(await res.text()).toContain("without an event stream")
   })
@@ -197,7 +276,7 @@ describe("empty streams", () => {
 
 describe("tool call streams", () => {
   // A complete tool call packed into one frame (input + stop together) is real output:
-  // preflight must replay it and the SSE converter must emit a full tool_use block.
+  // the merged converter must emit a full tool_use block.
   const singleFrame = () => [
     encodeKiroEvent("toolUseEvent", { toolUseId: "one-shot", name: "bash", input: '{"command":"ls"}', stop: true }),
     encodeKiroEvent("contextUsageEvent", { contextUsagePercentage: 5 }),
@@ -205,7 +284,7 @@ describe("tool call streams", () => {
 
   it("single-frame tool call passes preflight", async () => {
     const res = await preflight(...singleFrame())
-    expect(res.status).toBe(200)
+    expectEventStream(res)
   })
 
   it("single-frame tool call streamed", async () => {
@@ -226,7 +305,7 @@ describe("tool call streams", () => {
 
   it("multi-frame tool call passes preflight", async () => {
     const res = await preflight(...multiFrame())
-    expect(res.status).toBe(200)
+    expectEventStream(res)
   })
 
   it("multi-frame tool call streamed once", async () => {
@@ -250,7 +329,7 @@ describe("reasoning streams", () => {
 
   it("reasoning stream passes preflight", async () => {
     const res = await preflight(...reasoningOnly())
-    expect(res.status).toBe(200)
+    expectEventStream(res)
   })
 
   it("reasoning stream is visible", async () => {
@@ -265,6 +344,7 @@ describe("reasoning streams", () => {
     const sse = await streamedSse("claude-fable-5", ...reasoningOnly())
     expect(sse).toContain("Kiro closed the response stream without assistant output")
     expect(sse).not.toContain('"type":"message_stop"')
+    expectTerminalError(parseSse(sse))
   })
 
   // With display omitted, Kiro can emit only a signature before a tool call. OpenCode ignores an
@@ -276,7 +356,7 @@ describe("reasoning streams", () => {
 
   it("signature-only reasoning waits for tool output", async () => {
     const res = await preflight(...signatureOnly())
-    expect(res.status).toBe(200)
+    expectEventStream(res)
   })
 
   it("signature-only reasoning is retained", async () => {
@@ -312,7 +392,7 @@ describe("redacted KTR reasoning", () => {
 
   it("redacted KTR reasoning passes preflight", async () => {
     const res = await preflight(...ktrFrames())
-    expect(res.status).toBe(200)
+    expectEventStream(res)
   })
 
   it("redacted KTR reasoning becomes a replayable signature", async () => {
@@ -352,6 +432,157 @@ describe("content filter", () => {
     expect(body.error?.message).toContain("REASONING_EXTRACTION")
     expect(body.error?.message).toContain("Select a different model")
     expect(body.error?.message).toContain("Retrying the unchanged conversation will not help")
+  })
+})
+
+describe("merged response driver", () => {
+  it("emits the buffered prefix in order exactly once", async () => {
+    const frames = parseSse(
+      await streamedSse(
+        "claude-fable-5",
+        encodeKiroEvent("contextUsageEvent", { contextUsagePercentage: 5 }),
+        encodeKiroEvent("reasoningContentEvent", { text: "working" }),
+        encodeKiroEvent("assistantResponseEvent", { content: "done" }),
+      ),
+    )
+    const deltas = frames
+      .filter((frame) => frame.data.type === "content_block_delta")
+      .map((frame) => frame.data.delta)
+
+    expect(deltas).toEqual([
+      { type: "thinking_delta", thinking: "working" },
+      { type: "text_delta", text: "done" },
+    ])
+  })
+
+  it("passes a pre-output stream error through once", async () => {
+    const response = await preflight(
+      encodeKiroEvent("InternalServerException", { message: "provider failed" }, ":exception-type"),
+      encodeKiroEvent("assistantResponseEvent", { content: "after" }),
+    )
+    const frames = parseSse(await response.text())
+
+    expectEventStream(response)
+    expectTerminalError(frames)
+    expect(frames.find((frame) => frame.event === "error")?.data.error.message).toBe("provider failed")
+    expect(frames.some((frame) => frame.data.delta?.text === "after")).toBe(false)
+  })
+
+  it("cancels upstream after a terminal stream event without another read", async () => {
+    const upstream = steppedResponse(
+      encodeKiroEvent("assistantResponseEvent", { content: "before" }),
+      encodeKiroEvent("InternalServerException", { message: "provider failed" }, ":exception-type"),
+      encodeKiroEvent("assistantResponseEvent", { content: "after" }),
+      "eof",
+    )
+    upstream.holdCancellation()
+    const response = await kiroResponseToAnthropic(upstream.response, {
+      model: "claude-sonnet-4.6",
+      contextLimit: 1_000_000,
+    })
+    const frames = parseSse(await response.text())
+
+    expectTerminalError(frames)
+    expect(upstream.stats()).toEqual({
+      reads: 2,
+      cancels: 1,
+      releases: 1,
+      cancelReason: undefined,
+      remainingSteps: 2,
+    })
+  })
+
+  it("closes an open text block before a transport error", async () => {
+    const upstream = steppedResponse(
+      encodeKiroEvent("assistantResponseEvent", { content: "before" }),
+      new Error("socket reset"),
+    )
+    const response = await kiroResponseToAnthropic(upstream.response, {
+      model: "claude-sonnet-4.6",
+      contextLimit: 1_000_000,
+    })
+    const frames = parseSse(await response.text())
+
+    expect(frames.map((frame) => frame.event)).toEqual([
+      "message_start",
+      "content_block_start",
+      "content_block_delta",
+      "content_block_stop",
+      "error",
+    ])
+    expect(frames.at(-1)?.data.error.message).toBe("Error: socket reset")
+    expectTerminalError(frames)
+  })
+
+  it("discards a pending tool before a transport error", async () => {
+    const pendingTool = Buffer.concat([
+      encodeKiroEvent("toolUseEvent", { toolUseId: "pending", name: "bash" }),
+      encodeKiroEvent("toolUseEvent", { toolUseId: "pending", input: '{"command":"ls"' }),
+    ])
+    const upstream = steppedResponse(pendingTool, new Error("tool stream broke"))
+    const response = await kiroResponseToAnthropic(upstream.response, {
+      model: "claude-sonnet-4.6",
+      contextLimit: 1_000_000,
+    })
+    const frames = parseSse(await response.text())
+
+    expect(frames.filter((frame) => frame.data.content_block?.type === "tool_use")).toHaveLength(0)
+    expect(frames.filter((frame) => frame.data.delta?.type === "input_json_delta")).toHaveLength(0)
+    expectTerminalError(frames)
+  })
+
+  it("keeps the common transport error frame byte-identical", async () => {
+    const upstream = steppedResponse(
+      encodeKiroEvent("toolUseEvent", {
+        toolUseId: "complete",
+        name: "bash",
+        input: '{"command":"ls"}',
+        stop: true,
+      }),
+      new Error("socket reset"),
+    )
+    const response = await kiroResponseToAnthropic(upstream.response, {
+      model: "claude-sonnet-4.6",
+      contextLimit: 1_000_000,
+    })
+    const sse = await response.text()
+    const frames = parseSse(sse)
+    const expectedError =
+      'event: error\ndata: {"type":"error","error":{"type":"api_error","message":"Error: socket reset"}}\n\n'
+
+    expect(sse.endsWith(expectedError)).toBe(true)
+    expectTerminalError(frames)
+  })
+
+  it("propagates consumer cancellation without manufacturing an error", async () => {
+    const upstream = steppedResponse(
+      encodeKiroEvent("assistantResponseEvent", { content: "before" }),
+      "wait-error",
+    )
+    const response = await kiroResponseToAnthropic(upstream.response, {
+      model: "claude-sonnet-4.6",
+      contextLimit: 1_000_000,
+    })
+    const reader = response.body!.getReader()
+    const received: Uint8Array[] = []
+    for (let index = 0; index < 3; index++) {
+      const next = await reader.read()
+      expect(next.done).toBe(false)
+      received.push(next.value)
+    }
+
+    expect(new TextDecoder().decode(Buffer.concat(received))).not.toContain("event: error")
+    await reader.cancel("consumer stopped")
+    await upstream.released
+    expect((await reader.read()).done).toBe(true)
+
+    expect(upstream.stats()).toEqual({
+      reads: 2,
+      cancels: 1,
+      releases: 1,
+      cancelReason: "consumer stopped",
+      remainingSteps: 0,
+    })
   })
 })
 
