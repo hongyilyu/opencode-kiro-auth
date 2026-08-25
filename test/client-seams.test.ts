@@ -23,6 +23,39 @@ const session: KiroSession = {
 }
 
 describe("injected Kiro client seams", () => {
+  it("returns a redacted Anthropic 400 for malformed JSON", async () => {
+    let fetchCalls = 0
+    const fetcher = (async () => {
+      fetchCalls++
+      throw new Error("upstream must not be called")
+    }) as unknown as typeof globalThis.fetch
+    const kiroFetch = createKiroFetch(
+      "kiro",
+      "oauth",
+      { client: {} } as unknown as PluginInput,
+      async () => session,
+      { fetch: fetcher },
+    )
+
+    const response = await kiroFetch("https://api.anthropic.com/v1/messages", {
+      method: "POST",
+      body: '{"secret":"ksk_must_not_leak"',
+    })
+    const error = await response.json()
+
+    expect(response.status).toBe(400)
+    expect(response.headers.get("content-type")).toBe("application/json")
+    expect(error).toEqual({
+      type: "error",
+      error: {
+        type: "invalid_request_error",
+        message: "Invalid JSON request body: the Anthropic request could not be parsed.",
+      },
+    })
+    expect(JSON.stringify(error)).not.toContain("ksk_must_not_leak")
+    expect(fetchCalls).toBe(0)
+  })
+
   it("runs the chat pipeline end to end without network access", async () => {
     let fetchCalls = 0
     const fetcher = (async (_input: Parameters<typeof globalThis.fetch>[0], init?: RequestInit) => {

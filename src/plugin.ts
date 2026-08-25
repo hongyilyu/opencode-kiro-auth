@@ -191,7 +191,23 @@ export function createKiroFetch(
   return async function kiroFetch(_input: Parameters<typeof fetch>[0], init?: RequestInit) {
     const debug = createKiroDebugContext()
     const active = await getSession()
-    const body = typeof init?.body === "string" && init.body.length > 0 ? JSON.parse(init.body) : {}
+    let body: Record<string, any> = {}
+    if (typeof init?.body === "string" && init.body.length > 0) {
+      try {
+        body = JSON.parse(init.body)
+      } catch {
+        return new Response(
+          JSON.stringify({
+            type: "error",
+            error: {
+              type: "invalid_request_error",
+              message: "Invalid JSON request body: the Anthropic request could not be parsed.",
+            },
+          }),
+          { status: 400, headers: { "content-type": "application/json" } },
+        )
+      }
+    }
     const model = typeof body.model === "string" ? body.model : DEFAULT_MODEL
 
     const effort = new Headers(init?.headers).get(EFFORT_HEADER) ?? undefined
