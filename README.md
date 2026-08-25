@@ -118,7 +118,7 @@ credential selected by the active model.
   and snippets with inline citation hints.
 
 Verify it end to end through OpenCode (prints no token):
-`bun run script/test-websearch.ts "latest Node.js LTS version"`
+`bun run test-websearch "latest Node.js LTS version"`
 
 ## Credits
 

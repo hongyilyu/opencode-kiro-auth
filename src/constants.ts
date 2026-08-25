@@ -14,6 +14,8 @@ export const EXPIRY_SKEW_MS = 5 * 60 * 1000
 export const KIRO_ENDPOINT = "https://runtime.us-east-1.kiro.dev/"
 /** Endpoint kiro-cli uses for the InvokeMCP operation (built-in web_search). */
 export const KIRO_MCP_ENDPOINT = "https://q.us-east-1.amazonaws.com/"
+/** Kiro's web-search backend rejects queries longer than this many characters. */
+export const WEB_SEARCH_QUERY_MAX = 200
 export const KIRO_MANAGEMENT_ENDPOINT = "https://management.us-east-1.kiro.dev/"
 export const KIRO_MANAGEMENT_ENDPOINTS = [
   KIRO_MANAGEMENT_ENDPOINT,

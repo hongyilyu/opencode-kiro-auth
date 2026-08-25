@@ -140,7 +140,7 @@ describe("web_search tool", () => {
   const toolError = async (messageID: string) => {
     const webSearchTool = apiHooks.tool!.web_search
     try {
-      await webSearchTool.execute({ query: "test" } as never, { sessionID: "session", messageID, directory: "/tmp" } as never)
+      await webSearchTool.execute({ query: "test" }, { sessionID: "session", messageID, directory: "/tmp" } as never)
       return ""
     } catch (error) {
       return error instanceof Error ? error.message : String(error)

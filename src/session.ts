@@ -17,7 +17,7 @@ export type KiroSession = {
 }
 
 /** Session for the device-flow logins, backed by the refreshing credential manager. */
-export function createOAuthSession(
+function createOAuthSession(
   credentials: KiroCredentialManager,
   dependencies: KiroClientDependencies = {},
 ): KiroSession {
