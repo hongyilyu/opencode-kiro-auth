@@ -1,9 +1,10 @@
 import { describe, expect, it } from "bun:test"
 import type { PluginInput } from "@opencode-ai/plugin"
 import { fetchApiKeyProfileArn } from "../src/apikey"
-import { KIRO_PROFILE_ARN_PLACEHOLDER } from "../src/constants"
+import { KIRO_PROFILE_ARN_PLACEHOLDER, WEB_SEARCH_QUERY_MAX } from "../src/constants"
 import { createKiroFetch } from "../src/plugin"
 import { getProfileArn } from "../src/profile"
+import { webSearch } from "../src/mcp"
 import type { KiroSession } from "../src/session"
 import { createTools } from "../src/tools"
 import { chunkedResponse, encodeKiroEvent } from "./support/eventstream-fixtures"
@@ -143,6 +144,22 @@ describe("injected Kiro client seams", () => {
     expect(result.metadata.count).toBe(1)
     expect(result.output).toContain("[1] Bun 1.3")
     expect(result.output).toContain("https://bun.sh/blog/bun-v1.3")
+  })
+
+  it("truncates over-long web_search queries to the backend limit", async () => {
+    let rpcBody: Record<string, any> | undefined
+    const fetcher = (async (_input: Parameters<typeof globalThis.fetch>[0], init?: RequestInit) => {
+      rpcBody = JSON.parse(String(init?.body))
+      return new Response(
+        JSON.stringify({ jsonrpc: "2.0", id: "1", result: { content: [] } }),
+      )
+    }) as unknown as typeof globalThis.fetch
+
+    const longQuery = "q".repeat(WEB_SEARCH_QUERY_MAX + 50)
+    const results = await webSearch(session, longQuery, { fetch: fetcher })
+
+    expect(results).toEqual([])
+    expect(rpcBody?.params?.arguments?.query).toBe("q".repeat(WEB_SEARCH_QUERY_MAX))
   })
 })
 

@@ -1,4 +1,5 @@
 import { invokeMcpRequest, type KiroClientDependencies } from "./client"
+import { WEB_SEARCH_QUERY_MAX } from "./constants"
 import type { KiroSession } from "./session"
 import { redactKiroSecrets } from "./debug"
 
@@ -69,8 +70,9 @@ export async function webSearch(
   query: string,
   dependencies: KiroClientDependencies = {},
 ): Promise<WebSearchResult[]> {
-  // The backend rejects queries longer than 200 characters.
-  const trimmed = query.length > 200 ? query.slice(0, 200) : query
+  // The backend rejects longer queries; WEB_SEARCH_QUERY_MAX is also enforced by the
+  // tool schema in tools.ts — this guard covers direct callers.
+  const trimmed = query.length > WEB_SEARCH_QUERY_MAX ? query.slice(0, WEB_SEARCH_QUERY_MAX) : query
   const result = await invokeMcp(
     session,
     "tools/call",

@@ -1,5 +1,6 @@
-import type { ToolContext, ToolDefinition } from "@opencode-ai/plugin"
+import { tool, type ToolContext, type ToolDefinition } from "@opencode-ai/plugin"
 import type { KiroClientDependencies } from "./client"
+import { WEB_SEARCH_QUERY_MAX } from "./constants"
 import { webSearch, type WebSearchResult } from "./mcp"
 import type { KiroSession } from "./session"
 
@@ -30,21 +31,20 @@ export function createTools(
   getSession: (context: KiroToolContext) => Promise<KiroSession>,
   dependencies: KiroClientDependencies = {},
 ): Record<string, ToolDefinition> {
-  const web_search = {
+  const web_search = tool({
     description:
       "Search the web for current, up-to-date information using Kiro's built-in web search " +
       "service. Returns titles, URLs, and snippets. Use for recent events, " +
       "latest versions, pricing, or anything that may have changed since training. " +
       "Always cite sources inline as [n](url).",
     args: {
-      query: {
-        type: "string",
-        description: "The search query to execute. Must be 200 characters or fewer.",
-        maxLength: 200,
-      },
+      query: tool.schema
+        .string()
+        .max(WEB_SEARCH_QUERY_MAX)
+        .describe(`The search query to execute. Must be ${WEB_SEARCH_QUERY_MAX} characters or fewer.`),
     },
-    async execute(args: { query: string }, context: KiroToolContext) {
-      const query = String(args?.query ?? "")
+    async execute(args, context) {
+      const query = args.query
       const results = await webSearch(await getSession(context), query, dependencies)
       return {
         title: query,
@@ -52,7 +52,7 @@ export function createTools(
         metadata: { count: results.length, results },
       }
     },
-  } as unknown as ToolDefinition
+  })
 
   return { web_search }
 }

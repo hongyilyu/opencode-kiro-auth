@@ -10,6 +10,10 @@ export const DEFAULT_MODEL = "claude-sonnet-4.6"
 /** Refresh the access token this long before it expires. */
 export const EXPIRY_SKEW_MS = 5 * 60 * 1000
 
+/** Kiro's web-search backend rejects queries longer than this many characters. */
+export const WEB_SEARCH_QUERY_MAX = 200
+
+
 /** Kiro CodeWhisperer endpoints + awsJson1.0 wire facts (verified against kiro-cli). */
 export const KIRO_ENDPOINT = "https://runtime.us-east-1.kiro.dev/"
 /** Endpoint kiro-cli uses for the InvokeMCP operation (built-in web_search). */
