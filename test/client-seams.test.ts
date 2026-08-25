@@ -23,7 +23,7 @@ const session: KiroSession = {
 }
 
 describe("injected Kiro client seams", () => {
-  it("returns a redacted Anthropic 400 for malformed JSON", async () => {
+  it("returns a redacted Anthropic 400 for a non-object request body", async () => {
     let fetchCalls = 0
     const fetcher = (async () => {
       fetchCalls++
@@ -37,22 +37,25 @@ describe("injected Kiro client seams", () => {
       { fetch: fetcher },
     )
 
-    const response = await kiroFetch("https://api.anthropic.com/v1/messages", {
-      method: "POST",
-      body: '{"secret":"ksk_must_not_leak"',
-    })
-    const error = await response.json()
+    // Truncated JSON, and valid JSON whose top level is not an object.
+    for (const body of ['{"secret":"ksk_must_not_leak"', "null", "[1,2]", '"text"']) {
+      const response = await kiroFetch("https://api.anthropic.com/v1/messages", {
+        method: "POST",
+        body,
+      })
+      const error = await response.json()
 
-    expect(response.status).toBe(400)
-    expect(response.headers.get("content-type")).toBe("application/json")
-    expect(error).toEqual({
-      type: "error",
-      error: {
-        type: "invalid_request_error",
-        message: "Invalid JSON request body: the Anthropic request could not be parsed.",
-      },
-    })
-    expect(JSON.stringify(error)).not.toContain("ksk_must_not_leak")
+      expect(response.status).toBe(400)
+      expect(response.headers.get("content-type")).toBe("application/json")
+      expect(error).toEqual({
+        type: "error",
+        error: {
+          type: "invalid_request_error",
+          message: "Invalid JSON request body: the Anthropic request must be a JSON object.",
+        },
+      })
+      expect(JSON.stringify(error)).not.toContain("ksk_must_not_leak")
+    }
     expect(fetchCalls).toBe(0)
   })
 

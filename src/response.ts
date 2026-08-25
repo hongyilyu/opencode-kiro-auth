@@ -18,8 +18,13 @@ import {
 
 /* ---------------------------- response mapping ----------------------------- */
 
-function streamErrorResponse(status: number, type: string, message: string, headers?: Headers): Response {
-  return new Response(JSON.stringify({ type: "error", error: { type, message } }), {
+/** Canonical Anthropic error wire shape. Every error we emit flows through here. */
+function anthropicErrorBody(type: string, message: string): string {
+  return JSON.stringify({ type: "error", error: { type, message } })
+}
+
+export function anthropicErrorResponse(status: number, type: string, message: string, headers?: Headers): Response {
+  return new Response(anthropicErrorBody(type, message), {
     status,
     headers: headers ?? { "content-type": "application/json" },
   })
@@ -32,7 +37,7 @@ function rateLimitResponse(
   const headers = new Headers({ "content-type": "application/json" })
   const retryAfter = resolveRetryAfter({ header: res.headers.get("retry-after"), event })
   if (retryAfter) headers.set("retry-after", retryAfter)
-  return streamErrorResponse(429, "rate_limit_error", event.message, headers)
+  return anthropicErrorResponse(429, "rate_limit_error", event.message, headers)
 }
 
 type DecodedKiroEvent = { event: KiroEvent; parsed: KiroStreamEvent }
@@ -164,7 +169,7 @@ async function preflightKiroEvents(
       })
       return {
         kind: "httpError",
-        response: streamErrorResponse(
+        response: anthropicErrorResponse(
           /timeout|timed out/i.test(message) ? 504 : 502,
           "api_error",
           redactKiroSecrets(message),
@@ -186,8 +191,8 @@ async function preflightKiroEvents(
         kind: "httpError",
         response:
           terminalMetadata?.stopReason === "CONTENT_FILTERED"
-            ? streamErrorResponse(400, "invalid_request_error", contentFilteredMessage(terminalMetadata))
-            : streamErrorResponse(502, "api_error", EMPTY_TURN_ERROR_MESSAGE),
+            ? anthropicErrorResponse(400, "invalid_request_error", contentFilteredMessage(terminalMetadata))
+            : anthropicErrorResponse(502, "api_error", EMPTY_TURN_ERROR_MESSAGE),
       }
     }
 
@@ -210,7 +215,7 @@ async function preflightKiroEvents(
       kiroDebug(debug, "response.timed_out", { eventType: event.eventType })
       return {
         kind: "httpError",
-        response: streamErrorResponse(504, "api_error", parsed.message),
+        response: anthropicErrorResponse(504, "api_error", parsed.message),
       }
     }
     if (parsed.kind === "streamError") {
@@ -359,7 +364,7 @@ export async function kiroResponseToAnthropic(
   const body = res.body
   if (!body) {
     kiroDebug(debug, "response.body_missing", { status: res.status })
-    const response = streamErrorResponse(502, "api_error", "Kiro returned a response without an event stream.")
+    const response = anthropicErrorResponse(502, "api_error", "Kiro returned a response without an event stream.")
     kiroDebug(debug, "response.preflight_error", { status: response.status })
     return response
   }
@@ -476,7 +481,7 @@ export function mapKiroError(detail: string, status: number): { body: string; st
       "session or run /compact to reduce context, and avoid very large or tall images."
     return {
       status: 400,
-      body: JSON.stringify({ type: "error", error: { type: "invalid_request_error", message: friendly } }),
+      body: anthropicErrorBody("invalid_request_error", friendly),
     }
   }
 
