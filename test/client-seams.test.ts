@@ -134,7 +134,7 @@ describe("injected Kiro client seams", () => {
     const tools = createTools(async () => session, { fetch: fetcher })
 
     const result = (await tools.web_search.execute(
-      { query: "latest Bun release" } as never,
+      { query: "latest Bun release" },
       { sessionID: "session", messageID: "message", directory: "/tmp" } as never,
     )) as any
 

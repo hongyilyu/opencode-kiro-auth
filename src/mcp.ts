@@ -70,8 +70,8 @@ export async function webSearch(
   query: string,
   dependencies: KiroClientDependencies = {},
 ): Promise<WebSearchResult[]> {
-  // The backend rejects longer queries; WEB_SEARCH_QUERY_MAX is also enforced by the
-  // tool schema in tools.ts — this guard covers direct callers.
+  // Belt-and-braces: the tool schema (tools.ts) rejects over-long queries on hosts
+  // that validate zod args; this truncation covers older hosts that don't.
   const trimmed = query.length > WEB_SEARCH_QUERY_MAX ? query.slice(0, WEB_SEARCH_QUERY_MAX) : query
   const result = await invokeMcp(
     session,
