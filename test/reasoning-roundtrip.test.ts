@@ -110,11 +110,11 @@ describe("reasoning emit-replay round trip", () => {
     it(`round-trips ${testCase.name}`, () => {
       const recorded = recordThinking(testCase.events)
       expect(recorded.thinking).toBe(testCase.recordedText)
-      expect(Buffer.from(recorded.signature).equals(Buffer.from(testCase.signature))).toBe(true)
+      expect(recorded.signature).toBe(testCase.signature)
 
       const replayed = replayThinking(recorded)
       expect(replayed.text).toBe(testCase.replayedText)
-      expect(Buffer.from(replayed.signature).equals(Buffer.from(testCase.signature))).toBe(true)
+      expect(replayed.signature).toBe(testCase.signature)
     })
   }
 })

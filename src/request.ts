@@ -71,6 +71,13 @@ export type KiroAssistantEntry = {
   }
 }
 
+export type KiroModelRequestFields =
+  | { reasoning: { effort: string } }
+  | {
+      thinking: { type: "adaptive"; display: "omitted" }
+      output_config: { effort: string }
+    }
+
 export type KiroRequestPayload = {
   conversationState: {
     conversationId: string
@@ -80,19 +87,28 @@ export type KiroRequestPayload = {
     agentContinuationId: string
     agentTaskType: "vibe"
   }
-  additionalModelRequestFields?: Record<string, unknown>
+  additionalModelRequestFields?: KiroModelRequestFields
 }
 
 export type RequestDependencies = {
   now?: () => Date
   uuid?: () => string
   cwd?: () => string
+  platform?: string
   keepImageTurns?: number
 }
 
 type NormalizedMessage = Message & {
-  imageBearing: boolean
   keepImages: boolean
+}
+
+/** The history normalizer's result: rewritten turns plus the image-retention bookkeeping. */
+type NormalizedHistory = {
+  messages: NormalizedMessage[]
+  /** Indexes of image-bearing source turns (top-level or nested in a tool result). */
+  imageTurns: number[]
+  /** The tail of imageTurns inside the retention window; only these keep image bytes. */
+  keptImageTurns: number[]
 }
 
 type NormalizeOptions = {
@@ -107,11 +123,12 @@ type BuildOptions = {
   effort?: string
   now: Date
   uuid: () => string
-  cwd: () => string
+  envState: KiroEnvironmentState
 }
 
-const OPERATING_SYSTEM: KiroEnvironmentState["operatingSystem"] =
-  process.platform === "win32" ? "windows" : process.platform === "darwin" ? "macos" : "linux"
+function operatingSystem(platform: string): KiroEnvironmentState["operatingSystem"] {
+  return platform === "win32" ? "windows" : platform === "darwin" ? "macos" : "linux"
+}
 
 const DEFAULT_KEEP_IMAGE_TURNS = 2
 const TOOL_RETRY_BOUNDARY = "The tool calls completed before the next user message."
@@ -125,7 +142,7 @@ const IMAGE_FORMATS: Record<string, string> = {
 }
 
 /** Build Kiro's model-specific fields for the selected effort variant. */
-function buildModelRequestFields(modelId: string, effort?: string): Record<string, unknown> | undefined {
+function buildModelRequestFields(modelId: string, effort?: string): KiroModelRequestFields | undefined {
   if (!effort) return undefined
 
   if (modelId.startsWith("gpt-")) {
@@ -365,10 +382,6 @@ function topLevelImages(content: string | Block[]) {
   }))
 }
 
-function hasTopLevelImages(content: string | Block[]): boolean {
-  return typeof content !== "string" && content.some(isImageBlock)
-}
-
 function hasImages(content: string | Block[]): boolean {
   if (typeof content === "string") return false
   return content.some(
@@ -391,17 +404,20 @@ function omitToolResultImages(content: string | Block[]): string | Block[] {
   })
 }
 
-function applyImagePolicy(messages: Message[], keepImageTurns: number): NormalizedMessage[] {
-  const imageIndexes = messages.flatMap((message, index) => (hasImages(message.content) ? [index] : []))
-  const keepIndexes = new Set(keepImageTurns > 0 ? imageIndexes.slice(-keepImageTurns) : [])
-  const imageIndexSet = new Set(imageIndexes)
+function applyImagePolicy(messages: Message[], keepImageTurns: number): NormalizedHistory {
+  const imageTurns = messages.flatMap((message, index) => (hasImages(message.content) ? [index] : []))
+  const keptImageTurns = keepImageTurns > 0 ? imageTurns.slice(-keepImageTurns) : []
+  const keepIndexes = new Set(keptImageTurns)
 
-  return messages.map((message, index) => ({
-    ...message,
-    content: keepIndexes.has(index) ? message.content : omitToolResultImages(message.content),
-    imageBearing: imageIndexSet.has(index),
-    keepImages: keepIndexes.has(index),
-  }))
+  return {
+    messages: messages.map((message, index) => ({
+      ...message,
+      content: keepIndexes.has(index) ? message.content : omitToolResultImages(message.content),
+      keepImages: keepIndexes.has(index),
+    })),
+    imageTurns,
+    keptImageTurns,
+  }
 }
 
 /**
@@ -409,7 +425,7 @@ function applyImagePolicy(messages: Message[], keepImageTurns: number): Normaliz
  * the system prompt, normalize tool pairs after folding, then apply image retention. Keeping that
  * order inside one function makes the valid sequence uncallable-wrong.
  */
-function normalizeMessages(messages: Message[], opts: NormalizeOptions): NormalizedMessage[] {
+function normalizeMessages(messages: Message[], opts: NormalizeOptions): NormalizedHistory {
   let normalized = structuredClone(messages)
   if (opts.hasTools) normalized = splitMixedToolResultTurns(normalized)
   normalized = foldSystemPrompt(normalized, opts.systemText)
@@ -429,10 +445,11 @@ function userEntry(
   const results = toolResults(message.content)
   if (results) context.toolResults = results
   if (tools) context.tools = tools
-  const imageEntries = message.keepImages ? topLevelImages(message.content) : undefined
+  const turnImages = topLevelImages(message.content)
+  const imageEntries = message.keepImages ? turnImages : undefined
   const rawText = textOf(message.content)
   const hasToolResults = Boolean(results)
-  const droppedImages = !message.keepImages && hasTopLevelImages(message.content)
+  const droppedImages = !message.keepImages && Boolean(turnImages)
 
   // A tool-result continuation carries no user text; its blocks live in toolResults. Wrapping
   // whitespace makes Kiro treat it as a blank user turn. A dropped image-only turn gets a marker
@@ -491,28 +508,23 @@ function assistantEntry(message: Message): KiroAssistantEntry {
 }
 
 function buildKiroPayload(messages: NormalizedMessage[], opts: BuildOptions): KiroRequestPayload {
-  const envState: KiroEnvironmentState = {
-    operatingSystem: OPERATING_SYSTEM,
-    currentWorkingDirectory: opts.cwd(),
-    environmentVariables: [],
-  }
   const history = messages.slice(0, -1).map((message) =>
     message.role === "assistant"
       ? assistantEntry(message)
-      : userEntry(message, opts.modelId, envState, opts.now),
+      : userEntry(message, opts.modelId, opts.envState, opts.now),
   )
 
   const last = messages[messages.length - 1]
+  // Kiro requires a user current message; a transcript ending on an assistant turn gets a
+  // blank one (the " " form is wire-significant, see userEntry).
   const current: NormalizedMessage =
-    last && last.role !== "assistant"
-      ? last
-      : { role: "user", content: " ", imageBearing: false, keepImages: false }
+    last && last.role !== "assistant" ? last : { role: "user", content: " ", keepImages: false }
   const additionalModelRequestFields = buildModelRequestFields(opts.modelId, opts.effort)
 
   return {
     conversationState: {
       conversationId: opts.uuid(),
-      currentMessage: userEntry(current, opts.modelId, envState, opts.now, opts.tools, true),
+      currentMessage: userEntry(current, opts.modelId, opts.envState, opts.now, opts.tools, true),
       history,
       chatTriggerType: "MANUAL",
       agentContinuationId: opts.uuid(),
@@ -540,37 +552,39 @@ export function toKiroPayload(
   const keepImageTurns = resolveKeepImageTurns(
     deps.keepImageTurns ?? process.env.KIRO_KEEP_IMAGE_TURNS,
   )
-  const messages = normalizeMessages(body.messages ?? [], {
+  const normalized = normalizeMessages(body.messages ?? [], {
     hasTools: Boolean(tools),
     systemText: system,
     keepImageTurns,
   })
-  const payload = buildKiroPayload(messages, {
+  const payload = buildKiroPayload(normalized.messages, {
     modelId,
     tools,
     effort,
     now: (deps.now ?? (() => new Date()))(),
     uuid: deps.uuid ?? randomUUID,
-    cwd: deps.cwd ?? (() => process.cwd()),
+    envState: {
+      operatingSystem: operatingSystem(deps.platform ?? process.platform),
+      currentWorkingDirectory: (deps.cwd ?? (() => process.cwd()))(),
+      environmentVariables: [],
+    },
   })
 
-  const history = payload.conversationState.history
-  const imageIndexes = messages.flatMap((message, index) => (message.imageBearing ? [index] : []))
-  const keptImageIndexes = messages.flatMap((message, index) => (message.keepImages ? [index] : []))
-  const serializedPayload = JSON.stringify(payload)
-  kiroDebug(debug, "request.mapped", {
-    modelId,
-    effort: effort ?? null,
-    sourceMessages: body.messages?.length ?? 0,
-    historyEntries: history.length,
-    requestBytes: Buffer.byteLength(serializedPayload),
-    systemChars: system.length,
-    toolCount: tools?.length ?? 0,
-    toolNames: body.tools?.map((tool) => tool.name).filter((name) => typeof name === "string") ?? [],
-    imageTurns: imageIndexes.length,
-    keptImageTurns: keptImageIndexes,
-  })
   if (kiroDebugEnabled()) {
+    const { messages, imageTurns, keptImageTurns } = normalized
+    const history = payload.conversationState.history
+    kiroDebug(debug, "request.mapped", {
+      modelId,
+      effort: effort ?? null,
+      sourceMessages: body.messages?.length ?? 0,
+      historyEntries: history.length,
+      requestBytes: Buffer.byteLength(JSON.stringify(payload)),
+      systemChars: system.length,
+      toolCount: tools?.length ?? 0,
+      toolNames: body.tools?.map((tool) => tool.name).filter((name) => typeof name === "string") ?? [],
+      imageTurns: imageTurns.length,
+      keptImageTurns,
+    })
     kiroDebug(debug, "request.history_shape", {
       messages: messages.length,
       userMessages: messages.filter((message) => message.role === "user").length,

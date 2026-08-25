@@ -184,6 +184,19 @@ describe("request normalization", () => {
     cwd = "/workspace/second"
     expect(currentDirectory()).toBe("/workspace/second")
   })
+
+  // The golden corpus injects platform, so snapshots cannot depend on the host machine.
+  it("maps the injected platform to Kiro's operating system", () => {
+    const body = { model: "claude-sonnet-4.6", messages: [{ role: "user", content: "os" }] }
+    const os = (platform: string) =>
+      toKiroPayload(body, undefined, undefined, { platform }).conversationState.currentMessage.userInputMessage
+        .userInputMessageContext.envState.operatingSystem
+
+    expect(os("darwin")).toBe("macos")
+    expect(os("win32")).toBe("windows")
+    expect(os("linux")).toBe("linux")
+    expect(os("freebsd")).toBe("linux")
+  })
 })
 
 // A manual retry can be merged into the tool-result turn by the Anthropic adapter.
@@ -317,16 +330,17 @@ describe("reasoning replay", () => {
 describe("effort variant fields", () => {
   const fields = (model: string, effort?: string) =>
     toKiroPayload({ model, messages: [{ role: "user", content: "hi" }] }, effort)
-      .additionalModelRequestFields as any
+      .additionalModelRequestFields
 
   it("claude variant -> output_config.effort", () => {
-    const claudeFields = fields("claude-fable-5", "max")
-    expect(claudeFields?.output_config?.effort).toBe("max")
-    expect(claudeFields?.thinking?.type).toBe("adaptive")
+    expect(fields("claude-fable-5", "max")).toEqual({
+      thinking: { type: "adaptive", display: "omitted" },
+      output_config: { effort: "max" },
+    })
   })
 
   it("gpt variant -> reasoning.effort", () => {
-    expect(fields("gpt-5.6-sol", "xhigh")?.reasoning?.effort).toBe("xhigh")
+    expect(fields("gpt-5.6-sol", "xhigh")).toEqual({ reasoning: { effort: "xhigh" } })
   })
 
   it("no variant -> no extra fields", () => {
