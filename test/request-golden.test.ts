@@ -1,48 +1,39 @@
 import { describe, expect, it } from "bun:test"
-import { toKiroPayload } from "../src/transform"
-import { isolateEnv } from "./support/isolation"
+import { toKiroPayload, type RequestDependencies } from "../src/request"
 
-const MODULE_CWD = process.cwd()
-const GOLDEN_CONVERSATION_ID = "00000000-0000-4000-8000-000000000001"
-const GOLDEN_CONTINUATION_ID = "00000000-0000-4000-8000-000000000002"
-const GOLDEN_TIMESTAMP = "Friday, 2026-06-12T20:09:05.270+07:00"
+const GOLDEN_NOW = {
+  toLocaleDateString: () => "Friday",
+  getFullYear: () => 2026,
+  getMonth: () => 5,
+  getDate: () => 12,
+  getHours: () => 20,
+  getMinutes: () => 9,
+  getSeconds: () => 5,
+  getMilliseconds: () => 270,
+  getTimezoneOffset: () => -420,
+} as Date
 const IMAGE = (data: string) => ({
   type: "image",
   source: { type: "base64", media_type: "image/png", data },
 })
 const BASH_TOOL = { name: "bash", description: "Run a command", input_schema: { type: "object" } }
 
-function normalizedPayloadJson(body: any, effort?: string, preserveCwd = false): string {
-  const payload: any = structuredClone(toKiroPayload(body, effort))
-  payload.conversationState.conversationId = GOLDEN_CONVERSATION_ID
-  payload.conversationState.agentContinuationId = GOLDEN_CONTINUATION_ID
-
-  const normalize = (value: unknown): void => {
-    if (!value || typeof value !== "object") return
-    if (Array.isArray(value)) {
-      value.forEach(normalize)
-      return
-    }
-
-    const object = value as Record<string, unknown>
-    if (typeof object.content === "string") {
-      object.content = object.content.replace(/Current time: [^\n]+/, `Current time: ${GOLDEN_TIMESTAMP}`)
-    }
-    if (object.currentWorkingDirectory === MODULE_CWD) {
-      object.currentWorkingDirectory = preserveCwd ? "/module/load/cwd" : "/golden/cwd"
-    }
-    Object.values(object).forEach(normalize)
+function dependencies(cwd = "/golden/cwd"): RequestDependencies {
+  let uuid = 0
+  return {
+    now: () => GOLDEN_NOW,
+    uuid: () => `00000000-0000-4000-8000-${String(++uuid).padStart(12, "0")}`,
+    cwd: () => cwd,
+    keepImageTurns: 1,
   }
-  normalize(payload)
+}
 
-  return JSON.stringify(payload, null, 2)
+function normalizedPayloadJson(body: any, effort?: string, cwd?: string): string {
+  return JSON.stringify(toKiroPayload(body, effort, undefined, dependencies(cwd)), null, 2)
 }
 
 describe("request payload golden corpus", () => {
-  isolateEnv("KIRO_KEEP_IMAGE_TURNS")
-
   it("maps a plain text turn", () => {
-    process.env.KIRO_KEEP_IMAGE_TURNS = "1"
     expect(
       normalizedPayloadJson({
         model: "claude-sonnet-4.6",
@@ -56,7 +47,6 @@ describe("request payload golden corpus", () => {
   })
 
   it("folds system text into the first user turn", () => {
-    process.env.KIRO_KEEP_IMAGE_TURNS = "1"
     expect(
       normalizedPayloadJson({
         model: "claude-sonnet-4.6",
@@ -67,7 +57,6 @@ describe("request payload golden corpus", () => {
   })
 
   it("maps a tool-result continuation", () => {
-    process.env.KIRO_KEEP_IMAGE_TURNS = "1"
     expect(
       normalizedPayloadJson({
         model: "claude-sonnet-4.6",
@@ -85,7 +74,6 @@ describe("request payload golden corpus", () => {
   })
 
   it("splits a mixed retry turn", () => {
-    process.env.KIRO_KEEP_IMAGE_TURNS = "1"
     expect(
       normalizedPayloadJson({
         model: "claude-sonnet-4.6",
@@ -109,7 +97,6 @@ describe("request payload golden corpus", () => {
   })
 
   it("degrades an orphaned tool use", () => {
-    process.env.KIRO_KEEP_IMAGE_TURNS = "1"
     expect(
       normalizedPayloadJson({
         model: "claude-sonnet-4.6",
@@ -127,7 +114,6 @@ describe("request payload golden corpus", () => {
   })
 
   it("degrades tool blocks during tool-less compaction", () => {
-    process.env.KIRO_KEEP_IMAGE_TURNS = "1"
     expect(
       normalizedPayloadJson({
         model: "claude-sonnet-4.6",
@@ -144,7 +130,6 @@ describe("request payload golden corpus", () => {
   })
 
   it("trims images across the retention boundary", () => {
-    process.env.KIRO_KEEP_IMAGE_TURNS = "1"
     expect(
       normalizedPayloadJson({
         model: "claude-sonnet-4.6",
@@ -173,7 +158,6 @@ describe("request payload golden corpus", () => {
   })
 
   it("preserves a tool-result image inside the retention window", () => {
-    process.env.KIRO_KEEP_IMAGE_TURNS = "1"
     expect(
       normalizedPayloadJson({
         model: "claude-sonnet-4.6",
@@ -200,7 +184,6 @@ describe("request payload golden corpus", () => {
   })
 
   it("replays signature-only reasoning", () => {
-    process.env.KIRO_KEEP_IMAGE_TURNS = "1"
     expect(
       normalizedPayloadJson({
         model: "claude-fable-5",
@@ -220,7 +203,6 @@ describe("request payload golden corpus", () => {
   })
 
   it("maps Claude and GPT effort variants", () => {
-    process.env.KIRO_KEEP_IMAGE_TURNS = "1"
     expect(
       JSON.stringify(
         {
@@ -243,13 +225,13 @@ describe("request payload golden corpus", () => {
     ).toMatchSnapshot()
   })
 
-  it("captures the module-load working directory", () => {
-    process.env.KIRO_KEEP_IMAGE_TURNS = "1"
+  it("captures the working directory for each request", () => {
+    // Sanctioned change: cwd now comes from the request dependency, not module initialization.
     expect(
       normalizedPayloadJson(
         { model: "claude-sonnet-4.6", messages: [{ role: "user", content: "where am I?" }] },
         undefined,
-        true,
+        "/request/cwd",
       ),
     ).toMatchSnapshot()
   })

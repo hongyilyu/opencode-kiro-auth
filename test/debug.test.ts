@@ -1,5 +1,6 @@
 import { describe, expect, it } from "bun:test"
-import { kiroResponseToAnthropic, toKiroPayload } from "../src/transform"
+import { toKiroPayload } from "../src/request"
+import { kiroResponseToAnthropic } from "../src/transform"
 import { kiroDebug, redactKiroSecrets, type KiroDebugContext } from "../src/debug"
 import { chunkedResponse, encodeKiroEvent } from "./support/eventstream-fixtures"
 import { captureConsoleError, isolateEnv } from "./support/isolation"

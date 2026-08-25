@@ -6,7 +6,7 @@ import { generateAssistantResponse } from "../src/client"
 import { invokeMcp } from "../src/mcp"
 import { getProfileArn } from "../src/profile"
 import type { KiroSession } from "../src/session"
-import { toKiroPayload } from "../src/transform"
+import { toKiroPayload } from "../src/request"
 
 type WireCall = {
   url: string

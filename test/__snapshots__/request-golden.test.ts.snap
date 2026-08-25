@@ -436,7 +436,7 @@ exports[`request payload golden corpus trims images across the retention boundar
                 "toolUseId": "shot-1",
                 "content": [
                   {
-                    "text": "[{\\"type\\":\\"text\\",\\"text\\":\\"old\\"},{\\"type\\":\\"image\\",\\"source\\":{\\"type\\":\\"base64\\",\\"media_type\\":\\"image/png\\",\\"data\\":\\"OLD_TOOL_IMAGE\\"}}]"
+                    "text": "[{\\"type\\":\\"text\\",\\"text\\":\\"old\\"},{\\"type\\":\\"text\\",\\"text\\":\\"[image omitted]\\"}]"
                   }
                 ],
                 "status": "success"
@@ -656,7 +656,7 @@ exports[`request payload golden corpus maps Claude and GPT effort variants 1`] =
 }"
 `;
 
-exports[`request payload golden corpus captures the module-load working directory 1`] = `
+exports[`request payload golden corpus captures the working directory for each request 1`] = `
 "{
   "conversationState": {
     "conversationId": "00000000-0000-4000-8000-000000000001",
@@ -666,7 +666,7 @@ exports[`request payload golden corpus captures the module-load working director
         "userInputMessageContext": {
           "envState": {
             "operatingSystem": "linux",
-            "currentWorkingDirectory": "/module/load/cwd",
+            "currentWorkingDirectory": "/request/cwd",
             "environmentVariables": []
           }
         },
