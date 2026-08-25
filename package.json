@@ -47,7 +47,8 @@
     "typecheck": "tsc --noEmit",
     "check-auth": "bun run script/check-auth.ts",
     "list-models": "bun run script/list-models.ts",
-    "test-model": "bun run script/test-model.ts"
+    "test-model": "bun run script/test-model.ts",
+    "test-websearch": "bun run script/test-websearch.ts"
   },
   "peerDependencies": {
     "@opencode-ai/plugin": "*"
