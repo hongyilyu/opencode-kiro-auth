@@ -2,10 +2,10 @@ import { Buffer } from "node:buffer"
 import { EXPIRY_SKEW_MS } from "./constants"
 import { redactKiroSecrets } from "./debug"
 
-export const BUILDER_ID_START_URL = "https://view.awsapps.com/start"
-export const BUILDER_ID_REGION = "us-east-1"
+const BUILDER_ID_START_URL = "https://view.awsapps.com/start"
+const BUILDER_ID_REGION = "us-east-1"
 
-export const KIRO_SCOPES = [
+const KIRO_SCOPES = [
   "codewhisperer:completions",
   "codewhisperer:analysis",
   "codewhisperer:conversations",

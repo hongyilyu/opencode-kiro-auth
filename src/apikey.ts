@@ -2,9 +2,9 @@ import { getProfile, type KiroClientDependencies } from "./client"
 import { KIRO_MANAGEMENT_ENDPOINTS } from "./constants"
 import { redactKiroSecrets } from "./debug"
 
-export const API_KEY_PREFIX = "ksk_"
+const API_KEY_PREFIX = "ksk_"
 
-export const API_KEY_ENV_VAR = "KIRO_API_KEY"
+const API_KEY_ENV_VAR = "KIRO_API_KEY"
 
 export type ApiKeyCredential = {
   type: "api"
