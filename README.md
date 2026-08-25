@@ -69,6 +69,8 @@ without a variant selected send no effort field, leaving behavior unchanged.
 
 - `auth.ts` implements AWS SSO OIDC client registration, device authorization, and
   refresh using OpenCode-owned credentials.
+- `client.ts` is the single Kiro transport: every request (chat, web search, profile
+  lookups) is built and sent through one injectable wire client.
 - `request.ts` maps the Anthropic Messages request opencode sends into Kiro's
   CodeWhisperer `GenerateAssistantResponse` request (text, tool calls, images).
 - `response.ts` converts the AWS event-stream response back into an Anthropic SSE
