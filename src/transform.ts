@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto"
 import { DEFAULT_MODEL, KIRO_ORIGIN } from "./constants"
-import { drainKiroEvents, readKiroEvents, type KiroEvent } from "./eventstream"
+import { drainKiroEvents, type KiroEvent } from "./eventstream"
 import {
   EMPTY_TURN_ERROR_MESSAGE,
   OMITTED_REASONING_SENTINEL,
@@ -473,66 +473,6 @@ export function toKiroPayload(
 
 /* ---------------------------- response mapping ----------------------------- */
 
-/**
- * The subset of a body reader that replay needs, typed structurally: under @types/bun,
- * `Response.body.getReader()` returns Node's `stream/web` reader interface while the global
- * `ReadableStreamDefaultReader` is Bun's extended one (adds `readMany`), and the two are not
- * mutually assignable.
- */
-type BodyStreamReader = Pick<ReadableStreamDefaultReader<Uint8Array>, "read" | "releaseLock" | "cancel">
-
-function replayKiroResponse(
-  res: Response,
-  prefix: Uint8Array[],
-  reader?: BodyStreamReader,
-): Response {
-  let index = 0
-  let released = false
-  const release = () => {
-    if (reader && !released) {
-      released = true
-      reader.releaseLock()
-    }
-  }
-  const body = new ReadableStream<Uint8Array>({
-    async pull(controller) {
-      if (index < prefix.length) {
-        controller.enqueue(prefix[index++])
-        return
-      }
-      if (!reader) {
-        controller.close()
-        return
-      }
-      try {
-        const next = await reader.read()
-        if (next.done) {
-          release()
-          controller.close()
-          return
-        }
-        controller.enqueue(next.value)
-      } catch (error) {
-        release()
-        controller.error(error)
-      }
-    },
-    async cancel(reason) {
-      if (!reader) return
-      try {
-        await reader.cancel(reason)
-      } finally {
-        release()
-      }
-    },
-  })
-  return new Response(body, {
-    status: res.status,
-    statusText: res.statusText,
-    headers: res.headers,
-  })
-}
-
 function streamErrorResponse(status: number, type: string, message: string, headers?: Headers): Response {
   return new Response(JSON.stringify({ type: "error", error: { type, message } }), {
     status,
@@ -550,157 +490,353 @@ function rateLimitResponse(
   return streamErrorResponse(429, "rate_limit_error", event.message, headers)
 }
 
-/**
- * Kiro can return HTTP 200 and put failures in the AWS event stream. Read through
- * the first real output/error event, replaying the exact prefix for successful
- * responses. Pre-output failures become HTTP errors opencode can retry or surface.
- */
-export async function preflightKiroResponse(
-  res: Response,
-  debug: KiroDebugContext = createKiroDebugContext(),
-): Promise<Response> {
-  const preflightStartedAt = Date.now()
-  // Hoisted so the per-event debug shapes are never computed when debugging is off.
-  const debugEnabled = kiroDebugEnabled()
+type DecodedKiroEvent = { event: KiroEvent; parsed: KiroStreamEvent }
+
+type KiroEventSourceRead =
+  | { kind: "event"; entry: DecodedKiroEvent }
+  | { kind: "eof" }
+  | { kind: "readError"; error: unknown }
+
+type KiroEventSource = {
+  next(): Promise<KiroEventSourceRead>
+  cancel(reason?: unknown): Promise<void>
+  release(): void
+  stats(): {
+    chunks: number
+    totalBytes: number
+    eventCount: number
+    eventTypes: Record<string, number>
+    trailingBytes: number
+  }
+}
+
+type PreflightResult =
+  | { kind: "stream"; buffered: DecodedKiroEvent[] }
+  | { kind: "httpError"; response: Response }
+
+function createKiroEventSource(
+  body: NonNullable<Response["body"]>,
+  debug: KiroDebugContext,
+  debugEnabled: boolean,
+): KiroEventSource {
+  const reader = body.getReader()
+  const pending: KiroEvent[] = []
   const eventTypes: Record<string, number> = {}
+  let buf = Buffer.alloc(0)
   let chunks = 0
   let totalBytes = 0
   let eventCount = 0
-  let terminalMetadata: Extract<KiroStreamEvent, { kind: "metadata" }> | undefined
-  kiroDebug(debug, "response.preflight_start", { status: res.status, hasBody: Boolean(res.body) })
-  if (!res.body) {
-    kiroDebug(debug, "response.body_missing", { status: res.status })
-    return streamErrorResponse(502, "api_error", "Kiro returned a response without an event stream.")
+  let cancellation: Promise<void> | undefined
+
+  return {
+    async next(): Promise<KiroEventSourceRead> {
+      while (true) {
+        const event = pending.shift()
+        if (event) {
+          eventCount += 1
+          eventTypes[event.eventType] = (eventTypes[event.eventType] ?? 0) + 1
+          if (debugEnabled) {
+            kiroDebug(debug, "response.event", {
+              sequence: eventCount,
+              eventType: event.eventType,
+              ...kiroEventShape(event),
+            })
+          }
+          return { kind: "event", entry: { event, parsed: parseKiroEvent(event) } }
+        }
+
+        let next: Awaited<ReturnType<typeof reader.read>>
+        try {
+          next = await reader.read()
+        } catch (error) {
+          return { kind: "readError", error }
+        }
+        if (next.done) return { kind: "eof" }
+
+        chunks += 1
+        totalBytes += next.value.byteLength
+        buf = Buffer.concat([buf, Buffer.from(next.value)])
+        const { events, rest } = drainKiroEvents(buf)
+        buf = Buffer.from(rest)
+        if (debugEnabled) {
+          kiroDebug(debug, "response.chunk", {
+            chunk: chunks,
+            bytes: next.value.byteLength,
+            totalBytes,
+            decodedEvents: events.length,
+            trailingBytes: buf.length,
+          })
+        }
+        pending.push(...events)
+      }
+    },
+
+    cancel(reason?: unknown): Promise<void> {
+      if (!cancellation) {
+        try {
+          cancellation = Promise.resolve(reader.cancel(reason)).then(
+            () => {},
+            () => {},
+          )
+        } catch {
+          cancellation = Promise.resolve()
+        }
+      }
+      return cancellation
+    },
+
+    release(): void {
+      reader.releaseLock()
+    },
+
+    stats() {
+      return { chunks, totalBytes, eventCount, eventTypes, trailingBytes: buf.length }
+    },
   }
-  const reader = res.body.getReader()
-  const prefix: Uint8Array[] = []
-  let buf = Buffer.alloc(0)
-  let readerOwned = true
-  try {
-    while (true) {
-      let next: Awaited<ReturnType<typeof reader.read>>
-      try {
-        next = await reader.read()
-      } catch (error) {
-        readerOwned = false
-        reader.releaseLock()
-        const message = String(error)
-        kiroDebug(debug, "response.read_error", {
-          ...kiroDebugError(error),
-          chunks,
-          totalBytes,
-          eventCount,
-          eventTypes,
-          preflightMs: Date.now() - preflightStartedAt,
-        })
-        return streamErrorResponse(
+}
+
+async function preflightKiroEvents(
+  res: Response,
+  source: KiroEventSource,
+  debug: KiroDebugContext,
+  startedAt: number,
+): Promise<PreflightResult> {
+  const buffered: DecodedKiroEvent[] = []
+  let terminalMetadata: Extract<KiroStreamEvent, { kind: "metadata" }> | undefined
+
+  while (true) {
+    const next = await source.next()
+    if (next.kind === "readError") {
+      const message = String(next.error)
+      const stats = source.stats()
+      kiroDebug(debug, "response.read_error", {
+        ...kiroDebugError(next.error),
+        chunks: stats.chunks,
+        totalBytes: stats.totalBytes,
+        eventCount: stats.eventCount,
+        eventTypes: stats.eventTypes,
+        preflightMs: Date.now() - startedAt,
+      })
+      return {
+        kind: "httpError",
+        response: streamErrorResponse(
           /timeout|timed out/i.test(message) ? 504 : 502,
           "api_error",
           redactKiroSecrets(message),
-        )
+        ),
       }
-      if (next.done) {
-        reader.releaseLock()
-        readerOwned = false
-        kiroDebug(debug, "response.empty_eof", {
-          chunks,
-          totalBytes,
-          eventCount,
-          eventTypes,
-          trailingBytes: buf.length,
-          preflightMs: Date.now() - preflightStartedAt,
+    }
+
+    if (next.kind === "eof") {
+      const stats = source.stats()
+      kiroDebug(debug, "response.empty_eof", {
+        chunks: stats.chunks,
+        totalBytes: stats.totalBytes,
+        eventCount: stats.eventCount,
+        eventTypes: stats.eventTypes,
+        trailingBytes: stats.trailingBytes,
+        preflightMs: Date.now() - startedAt,
+      })
+      return {
+        kind: "httpError",
+        response:
+          terminalMetadata?.stopReason === "CONTENT_FILTERED"
+            ? streamErrorResponse(400, "invalid_request_error", contentFilteredMessage(terminalMetadata))
+            : streamErrorResponse(502, "api_error", EMPTY_TURN_ERROR_MESSAGE),
+      }
+    }
+
+    const { event, parsed } = next.entry
+    buffered.push(next.entry)
+    if (parsed.kind === "metadata") terminalMetadata = parsed
+    if (parsed.kind === "rateLimit") {
+      await source.cancel()
+      kiroDebug(debug, "response.rate_limited", {
+        eventType: event.eventType,
+        retryAfter: resolveRetryAfter({ header: res.headers.get("retry-after"), event: parsed }) ?? null,
+      })
+      return {
+        kind: "httpError",
+        response: rateLimitResponse(res, parsed),
+      }
+    }
+    if (parsed.kind === "timeout") {
+      await source.cancel()
+      kiroDebug(debug, "response.timed_out", { eventType: event.eventType })
+      return {
+        kind: "httpError",
+        response: streamErrorResponse(504, "api_error", parsed.message),
+      }
+    }
+    if (parsed.kind === "streamError") {
+      kiroDebug(debug, "response.error_passthrough", { eventType: event.eventType })
+      return { kind: "stream", buffered }
+    }
+    if (!beginsAssistantOutput(parsed)) continue
+
+    const stats = source.stats()
+    kiroDebug(debug, "response.output_detected", {
+      eventType: event.eventType,
+      chunks: stats.chunks,
+      totalBytes: stats.totalBytes,
+      eventCount: stats.eventCount,
+      preflightMs: Date.now() - startedAt,
+    })
+    return { kind: "stream", buffered }
+  }
+}
+
+function anthropicStreamResponse(
+  source: KiroEventSource,
+  buffered: DecodedKiroEvent[],
+  opts: { model: string; contextLimit: number },
+  debug: KiroDebugContext,
+  debugEnabled: boolean,
+): Response {
+  const textEncoder = new TextEncoder()
+  const encoder = new AnthropicSseEncoder({ model: opts.model, contextLimit: opts.contextLimit })
+  let outputCancelled = false
+
+  const pump = async (controller: ReadableStreamDefaultController<Uint8Array>): Promise<void> => {
+    let eventCount = 0
+    const eventTypes: Record<string, number> = {}
+    const send = (events: AnthropicSseEvent[]): void => {
+      for (const event of events) controller.enqueue(textEncoder.encode(serializeSse(event)))
+    }
+    const sendEvent = (entry: DecodedKiroEvent): boolean => {
+      eventCount += 1
+      eventTypes[entry.event.eventType] = (eventTypes[entry.event.eventType] ?? 0) + 1
+      if (debugEnabled) {
+        kiroDebug(debug, "sse.event", {
+          sequence: eventCount,
+          eventType: entry.event.eventType,
+          ...kiroEventShape(entry.event),
         })
-        if (terminalMetadata?.stopReason === "CONTENT_FILTERED") {
-          return streamErrorResponse(
-            400,
-            "invalid_request_error",
-            contentFilteredMessage(terminalMetadata),
-          )
+      }
+      send(encoder.onEvent(entry.parsed))
+      if (!encoder.terminated) return false
+
+      kiroDebug(debug, "sse.error", {
+        name: entry.parsed.kind,
+        message: "message" in entry.parsed ? entry.parsed.message : "Kiro stream error",
+        eventCount,
+        eventTypes,
+        ...encoder.debugState(),
+      })
+      return true
+    }
+
+    try {
+      send(encoder.begin())
+      kiroDebug(debug, "sse.start", { model: opts.model, contextLimit: opts.contextLimit })
+
+      for (const entry of buffered) {
+        if (sendEvent(entry)) {
+          void source.cancel()
+          return
         }
-        return streamErrorResponse(502, "api_error", EMPTY_TURN_ERROR_MESSAGE)
       }
 
-      chunks += 1
-      totalBytes += next.value.byteLength
-      prefix.push(next.value)
-      buf = Buffer.concat([buf, Buffer.from(next.value)])
-      const { events, rest } = drainKiroEvents(buf)
-      buf = Buffer.from(rest)
-      if (debugEnabled) {
-        kiroDebug(debug, "response.chunk", {
-          chunk: chunks,
-          bytes: next.value.byteLength,
-          totalBytes,
-          decodedEvents: events.length,
-          trailingBytes: buf.length,
-        })
-      }
-      for (const event of events) {
-        eventCount += 1
-        eventTypes[event.eventType] = (eventTypes[event.eventType] ?? 0) + 1
-        if (debugEnabled) {
-          kiroDebug(debug, "response.event", {
-            sequence: eventCount,
-            eventType: event.eventType,
-            ...kiroEventShape(event),
-          })
-        }
-        const parsed = parseKiroEvent(event)
-        if (parsed.kind === "metadata") terminalMetadata = parsed
-        if (parsed.kind === "rateLimit") {
-          try {
-            await reader.cancel()
-          } catch {
-            // The synthetic 429 remains useful even if the upstream body resists cancellation.
-          } finally {
-            reader.releaseLock()
-            readerOwned = false
+      while (true) {
+        const next = await source.next()
+        if (outputCancelled) return
+        if (next.kind === "readError") throw next.error
+        if (next.kind === "eof") {
+          send(encoder.onEof())
+          if (encoder.terminated) {
+            kiroDebug(debug, "sse.empty_eof", {
+              eventCount,
+              eventTypes,
+              ...encoder.debugState(),
+            })
+            return
           }
-          kiroDebug(debug, "response.rate_limited", {
-            eventType: event.eventType,
-            retryAfter:
-              resolveRetryAfter({ header: res.headers.get("retry-after"), event: parsed }) ?? null,
-          })
-          return rateLimitResponse(res, parsed)
-        }
-        if (parsed.kind === "timeout") {
-          try {
-            await reader.cancel()
-          } catch {
-            // The synthetic timeout remains useful even if the upstream body resists cancellation.
-          } finally {
-            reader.releaseLock()
-            readerOwned = false
-          }
-          kiroDebug(debug, "response.timed_out", { eventType: event.eventType })
-          return streamErrorResponse(504, "api_error", parsed.message)
-        }
-        if (parsed.kind === "streamError") {
-          kiroDebug(debug, "response.error_passthrough", { eventType: event.eventType })
-          const replay = replayKiroResponse(res, prefix, reader)
-          readerOwned = false
-          return replay
-        }
-        if (beginsAssistantOutput(parsed)) {
-          kiroDebug(debug, "response.output_detected", {
-            eventType: event.eventType,
-            chunks,
-            totalBytes,
+          kiroDebug(debug, "sse.complete", {
             eventCount,
-            preflightMs: Date.now() - preflightStartedAt,
+            eventTypes,
+            ...encoder.debugState(),
           })
-          const replay = replayKiroResponse(res, prefix, reader)
-          readerOwned = false
-          return replay
+          return
+        }
+        if (sendEvent(next.entry)) {
+          void source.cancel()
+          return
         }
       }
-    }
-  } finally {
-    if (readerOwned) {
-      void reader.cancel().catch(() => {})
-      reader.releaseLock()
+    } catch (error) {
+      if (outputCancelled) return
+
+      const failure = { kind: "streamError" as const, message: String(error) }
+      const failureEvents = encoder.onEvent(failure)
+      kiroDebug(debug, "sse.error", {
+        ...kiroDebugError(error),
+        eventCount,
+        eventTypes,
+        ...encoder.debugState(),
+      })
+      try {
+        send(failureEvents)
+      } catch {
+        // The consumer may have cancelled while the upstream failure was in flight.
+      }
+      void source.cancel(error)
+    } finally {
+      try {
+        controller.close()
+      } catch {
+        // A cancelled output stream is already closed.
+      }
+      source.release()
     }
   }
+
+  const stream = new ReadableStream<Uint8Array>({
+    start(controller) {
+      void pump(controller)
+    },
+    async cancel(reason) {
+      outputCancelled = true
+      await source.cancel(reason)
+    },
+  })
+  return new Response(stream, { status: 200, headers: { "content-type": "text/event-stream" } })
+}
+
+/** Decode one Kiro response and expose either a pre-output HTTP error or Anthropic SSE. */
+export async function kiroResponseToAnthropic(
+  res: Response,
+  opts: { model: string; contextLimit: number; debug?: KiroDebugContext },
+): Promise<Response> {
+  const debug = opts.debug ?? createKiroDebugContext()
+  const preflightStartedAt = Date.now()
+  const debugEnabled = kiroDebugEnabled()
+  kiroDebug(debug, "response.preflight_start", { status: res.status, hasBody: Boolean(res.body) })
+  const body = res.body
+  if (!body) {
+    kiroDebug(debug, "response.body_missing", { status: res.status })
+    const response = streamErrorResponse(502, "api_error", "Kiro returned a response without an event stream.")
+    kiroDebug(debug, "response.preflight_error", { status: response.status })
+    return response
+  }
+
+  const source = createKiroEventSource(body, debug, debugEnabled)
+  let preflight: PreflightResult
+  try {
+    preflight = await preflightKiroEvents(res, source, debug, preflightStartedAt)
+  } catch (error) {
+    void source.cancel(error)
+    source.release()
+    throw error
+  }
+
+  if (preflight.kind === "httpError") {
+    source.release()
+    kiroDebug(debug, "response.preflight_error", { status: preflight.response.status })
+    return preflight.response
+  }
+
+  kiroDebug(debug, "response.preflight_ok", { contextLimit: opts.contextLimit })
+  return anthropicStreamResponse(source, preflight.buffered, opts, debug, debugEnabled)
 }
 
 function contentFilteredMessage(metadata: Extract<KiroStreamEvent, { kind: "metadata" }>): string {
@@ -761,85 +897,6 @@ function kiroEventShape(event: KiroEvent): Record<string, unknown> {
     }
   }
   return shape
-}
-
-/** Convert Kiro's event-stream into the Anthropic Messages SSE stream opencode expects. */
-export function kiroToAnthropicStream(
-  res: Response,
-  model: string,
-  contextLimit = 1_000_000,
-  debug: KiroDebugContext = createKiroDebugContext(),
-): Response {
-  const stream = new ReadableStream<Uint8Array>({
-    async start(controller) {
-      const textEncoder = new TextEncoder()
-      const encoder = new AnthropicSseEncoder({ model, contextLimit })
-      const send = (events: AnthropicSseEvent[]) => {
-        for (const event of events) controller.enqueue(textEncoder.encode(serializeSse(event)))
-      }
-      let eventCount = 0
-      const eventTypes: Record<string, number> = {}
-      // Hoisted so the per-event debug shapes are never computed when debugging is off.
-      const debugEnabled = kiroDebugEnabled()
-      send(encoder.begin())
-      kiroDebug(debug, "sse.start", { model, contextLimit })
-
-      try {
-        for await (const ev of readKiroEvents(res)) {
-          eventCount += 1
-          eventTypes[ev.eventType] = (eventTypes[ev.eventType] ?? 0) + 1
-          if (debugEnabled) {
-            kiroDebug(debug, "sse.event", {
-              sequence: eventCount,
-              eventType: ev.eventType,
-              ...kiroEventShape(ev),
-            })
-          }
-          const parsed = parseKiroEvent(ev)
-          send(encoder.onEvent(parsed))
-          if (encoder.terminated) {
-            kiroDebug(debug, "sse.error", {
-              name: parsed.kind,
-              message: "message" in parsed ? parsed.message : "Kiro stream error",
-              eventCount,
-              eventTypes,
-              ...encoder.debugState(),
-            })
-            break
-          }
-        }
-
-        const terminatedByEvent = encoder.terminated
-        send(encoder.onEof())
-        if (terminatedByEvent) return
-        if (encoder.terminated) {
-          kiroDebug(debug, "sse.empty_eof", { eventCount, eventTypes, ...encoder.debugState() })
-          return
-        }
-        kiroDebug(debug, "sse.complete", { eventCount, eventTypes, ...encoder.debugState() })
-      } catch (error) {
-        kiroDebug(debug, "sse.error", {
-          ...kiroDebugError(error),
-          eventCount,
-          eventTypes,
-          ...encoder.debugState(),
-        })
-        send([
-          {
-            event: "error",
-            data: {
-              type: "error",
-              error: { type: "api_error", message: redactKiroSecrets(String(error)) },
-            },
-          },
-        ])
-      } finally {
-        controller.close()
-      }
-    },
-  })
-
-  return new Response(stream, { status: 200, headers: { "content-type": "text/event-stream" } })
 }
 
 /* ------------------------------ error mapping ------------------------------ */

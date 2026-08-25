@@ -13,7 +13,7 @@ import {
 } from "./auth"
 import { generateAssistantResponse, type KiroClientDependencies } from "./client"
 import { createSession, type KiroSession } from "./session"
-import { toKiroPayload, kiroToAnthropicStream, mapKiroError, preflightKiroResponse } from "./transform"
+import { kiroResponseToAnthropic, mapKiroError, toKiroPayload } from "./transform"
 import { resolveContextLimit } from "./limits"
 import { createTools, type KiroToolContext } from "./tools"
 import { createKiroDebugContext, kiroDebug, redactKiroSecrets } from "./debug"
@@ -230,15 +230,10 @@ export function createKiroFetch(
       return new Response(mapped.body, { status: mapped.status, headers })
     }
 
-    const streamResponse = await preflightKiroResponse(response, debug)
-    if (!streamResponse.ok) {
-      kiroDebug(debug, "response.preflight_error", { status: streamResponse.status })
-      return streamResponse
-    }
-
+    // Resolution never throws and is memoized per client, provider, and model. Doing it eagerly
+    // costs one cached lookup on error paths and keeps response conversion behind one call.
     const contextLimit = await resolveContextLimit(input.client, providerId, model)
-    kiroDebug(debug, "response.preflight_ok", { contextLimit })
-    return kiroToAnthropicStream(streamResponse, model, contextLimit, debug)
+    return kiroResponseToAnthropic(response, { model, contextLimit, debug })
   }
 }
 

@@ -93,28 +93,3 @@ export function drainKiroEvents(buf: Buffer): { events: KiroEvent[]; rest: Buffe
   }
   return { events, rest: buf.subarray(off) }
 }
-
-/** Stream Kiro events from a fetch Response body as they arrive. */
-export async function* readKiroEvents(res: Response): AsyncGenerator<KiroEvent> {
-  if (!res.body) return
-  const reader = res.body.getReader()
-  let buf = Buffer.alloc(0)
-  let complete = false
-  try {
-    while (true) {
-      const { done, value } = await reader.read()
-      if (done) {
-        complete = true
-        break
-      }
-      buf = Buffer.concat([buf, Buffer.from(value)])
-      const { events, rest } = drainKiroEvents(buf)
-      buf = Buffer.from(rest)
-      for (const event of events) yield event
-    }
-  } finally {
-    // Consumers may stop after an error event; release the upstream body promptly.
-    if (!complete) void reader.cancel().catch(() => {})
-    reader.releaseLock()
-  }
-}
