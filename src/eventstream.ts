@@ -9,6 +9,45 @@ export type KiroEvent = {
   payload: Record<string, unknown>
 }
 
+/**
+ * Encode one Kiro event frame, mirroring the decoder below. TEST-ONLY: both CRC fields are
+ * zeroed, so the output is NOT wire-conformant eventstream framing — any consumer that validates
+ * CRCs will reject these frames. Never send them to Kiro. They exist for deterministic synthetic
+ * streams in tests and work only because the decoder below deliberately ignores CRCs; if the
+ * decoder ever starts validating them, every stream test fails here first.
+ */
+export function encodeKiroEvent(eventType: string, payload: unknown, headerName = ":event-type"): Buffer {
+  const body = Buffer.from(JSON.stringify(payload))
+  const name = Buffer.from(headerName)
+  const value = Buffer.from(eventType)
+
+  const valueLength = Buffer.alloc(2)
+  valueLength.writeUInt16BE(value.length)
+  const headers = Buffer.concat([
+    Buffer.from([name.length]),
+    name,
+    Buffer.from([7]),
+    valueLength,
+    value,
+  ])
+
+  const total = 12 + headers.length + body.length + 4
+  const frame = Buffer.alloc(total)
+  let offset = 0
+  frame.writeUInt32BE(total, offset)
+  offset += 4
+  frame.writeUInt32BE(headers.length, offset)
+  offset += 4
+  frame.writeUInt32BE(0, offset)
+  offset += 4
+  headers.copy(frame, offset)
+  offset += headers.length
+  body.copy(frame, offset)
+  offset += body.length
+  frame.writeUInt32BE(0, offset)
+  return frame
+}
+
 function parseHeaders(buf: Buffer, start: number, end: number): Record<string, string> {
   const headers: Record<string, string> = {}
   let h = start

@@ -10,14 +10,6 @@ export const DEFAULT_MODEL = "claude-sonnet-4.6"
 /** Refresh the access token this long before it expires. */
 export const EXPIRY_SKEW_MS = 5 * 60 * 1000
 
-/** Apply an optional fixed rate-limit delay while preserving upstream behavior by default. */
-export function resolveRateLimitRetryAfter(upstream?: string | null): string | undefined {
-  const raw = process.env.KIRO_RATE_LIMIT_RETRY_SECONDS?.trim()
-  if (!raw) return upstream ?? undefined
-  const seconds = Number(raw)
-  return Number.isSafeInteger(seconds) && seconds > 0 ? String(seconds) : upstream ?? undefined
-}
-
 /** Kiro CodeWhisperer endpoints + awsJson1.0 wire facts (verified against kiro-cli). */
 export const KIRO_ENDPOINT = "https://runtime.us-east-1.kiro.dev/"
 /** Endpoint kiro-cli uses for the InvokeMCP operation (built-in web_search). */

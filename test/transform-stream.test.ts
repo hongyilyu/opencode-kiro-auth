@@ -1,4 +1,7 @@
 import { describe, expect, it } from "bun:test"
+import type { PluginInput } from "@opencode-ai/plugin"
+import { createKiroFetch } from "../src/plugin"
+import type { KiroSession } from "../src/session"
 import { kiroToAnthropicStream, mapKiroError, preflightKiroResponse } from "../src/transform"
 import { chunkedResponse, encodeKiroEvent } from "./support/eventstream-fixtures"
 import { isolateEnv } from "./support/isolation"
@@ -16,6 +19,71 @@ async function streamedSse(model: string, ...frames: Uint8Array[]): Promise<stri
 
 async function errorBody(res: Response): Promise<{ error?: { type?: string; message?: string } }> {
   return (await res.json()) as { error?: { type?: string; message?: string } }
+}
+
+type ParsedSseFrame = { event: string; data: Record<string, any> }
+
+function parseSse(value: string): ParsedSseFrame[] {
+  return value
+    .split("\n\n")
+    .filter(Boolean)
+    .map((block) => {
+      const lines = block.split("\n")
+      return {
+        event: lines.find((line) => line.startsWith("event: "))?.slice(7) ?? "",
+        data: JSON.parse(lines.find((line) => line.startsWith("data: "))?.slice(6) ?? "{}"),
+      }
+    })
+}
+
+async function fullPipeline(...chunks: Uint8Array[]): Promise<Response> {
+  const session: KiroSession = {
+    async authHeaders() {
+      return { authorization: "Bearer test-token" }
+    },
+    async chatProfileArn() {
+      return "arn:aws:codewhisperer:us-east-1:111122223333:profile/STREAMTEST"
+    },
+    async mcpProfileArn() {
+      return "arn:aws:codewhisperer:us-east-1:111122223333:profile/STREAMTEST"
+    },
+  }
+  const fetcher = (async () => chunkedResponse(...chunks)) as unknown as typeof globalThis.fetch
+  const input = {
+    client: {
+      config: {
+        providers: async () => ({
+          data: {
+            providers: [
+              {
+                id: "kiro",
+                models: { "claude-fable-5": { limit: { context: 200_000 } } },
+              },
+            ],
+          },
+        }),
+      },
+    },
+  } as unknown as PluginInput
+  const kiroFetch = createKiroFetch("kiro", "oauth", input, async () => session, { fetch: fetcher })
+  return kiroFetch("https://api.anthropic.com/v1/messages", {
+    method: "POST",
+    body: JSON.stringify({
+      model: "claude-fable-5",
+      messages: [{ role: "user", content: "run a command" }],
+      tools: [
+        {
+          name: "bash",
+          description: "Run a shell command",
+          input_schema: {
+            type: "object",
+            properties: { command: { type: "string" } },
+            required: ["command"],
+          },
+        },
+      ],
+    }),
+  })
 }
 
 // Usage is derived from Kiro's contextUsageEvent percentage.
@@ -165,7 +233,7 @@ describe("tool call streams", () => {
     const sse = await streamedSse("claude-sonnet-4.6", ...multiFrame())
     expect(sse.split('"content_block_start"').length - 1).toBe(1)
     expect(sse).toContain('"id":"multi"')
-    expect(sse).toContain('"partial_json":"{\\"command\\""')
+    expect(sse).toContain('"partial_json":"{\\"command\\":\\"ls\\"}"')
     expect(sse).toContain('"stop_reason":"tool_use"')
   })
 })
@@ -284,6 +352,102 @@ describe("content filter", () => {
     expect(body.error?.message).toContain("REASONING_EXTRACTION")
     expect(body.error?.message).toContain("Select a different model")
     expect(body.error?.message).toContain("Retrying the unchanged conversation will not help")
+  })
+})
+
+describe("injected full response pipeline", () => {
+  it("turns a truncated tool announcement into one empty-turn error", async () => {
+    const response = await fullPipeline(
+      encodeKiroEvent("toolUseEvent", { toolUseId: "truncated", name: "bash" }),
+    )
+    const frames = parseSse(await response.text())
+
+    expect(response.status).toBe(200)
+    expect(frames.filter((frame) => frame.data.content_block?.type === "tool_use")).toHaveLength(0)
+    expect(frames.filter((frame) => frame.event === "error")).toEqual([
+      {
+        event: "error",
+        data: {
+          type: "error",
+          error: {
+            type: "api_error",
+            message: "Kiro closed the response stream without assistant output.",
+          },
+        },
+      },
+    ])
+    expect(frames.some((frame) => frame.data.type === "message_stop")).toBe(false)
+  })
+
+  it("keeps one atomic tool call across interleaved reasoning and text", async () => {
+    const response = await fullPipeline(
+      encodeKiroEvent("toolUseEvent", { toolUseId: "interleaved", name: "bash" }),
+      encodeKiroEvent("reasoningContentEvent", { text: "checking" }),
+      encodeKiroEvent("toolUseEvent", { toolUseId: "interleaved", input: '{"command":' }),
+      encodeKiroEvent("assistantResponseEvent", { content: "status" }),
+      encodeKiroEvent("toolUseEvent", { toolUseId: "interleaved", input: '"ls"}' }),
+      encodeKiroEvent("toolUseEvent", { toolUseId: "interleaved", stop: true }),
+    )
+    const frames = parseSse(await response.text())
+    const starts = frames.filter((frame) => frame.data.type === "content_block_start")
+    const toolStarts = starts.filter((frame) => frame.data.content_block.type === "tool_use")
+    const argDeltas = frames.filter((frame) => frame.data.delta?.type === "input_json_delta")
+
+    expect(starts.map((frame) => frame.data.content_block.type)).toEqual([
+      "thinking",
+      "text",
+      "tool_use",
+    ])
+    expect(starts.map((frame) => frame.data.index)).toEqual([0, 1, 2])
+    expect(toolStarts).toHaveLength(1)
+    expect(toolStarts[0]?.data.content_block.id).toBe("interleaved")
+    expect(argDeltas).toHaveLength(1)
+    expect(argDeltas[0]?.data.delta.partial_json).toBe('{"command":"ls"}')
+    expect(frames.some((frame) => frame.data.delta?.stop_reason === "tool_use")).toBe(true)
+  })
+
+  it("coerces object input and emits it through the real pipeline", async () => {
+    const response = await fullPipeline(
+      encodeKiroEvent("toolUseEvent", {
+        toolUseId: "object-input",
+        name: "bash",
+        input: { command: "ls" },
+        stop: true,
+      }),
+    )
+    const frames = parseSse(await response.text())
+    const argDeltas = frames.filter((frame) => frame.data.delta?.type === "input_json_delta")
+
+    expect(argDeltas).toHaveLength(1)
+    expect(argDeltas[0]?.data.delta.partial_json).toBe('{"command":"ls"}')
+    expect(frames.some((frame) => frame.data.type === "message_stop")).toBe(true)
+  })
+
+  it("makes a post-output stream error terminal", async () => {
+    const response = await fullPipeline(
+      encodeKiroEvent("assistantResponseEvent", { content: "before" }),
+      encodeKiroEvent(
+        "InternalServerException",
+        { message: "provider failed" },
+        ":exception-type",
+      ),
+      encodeKiroEvent("assistantResponseEvent", { content: "after" }),
+    )
+    const frames = parseSse(await response.text())
+
+    expect(frames.filter((frame) => frame.event === "error")).toHaveLength(1)
+    expect(frames.filter((frame) => frame.data.delta?.type === "text_delta")).toEqual([
+      {
+        event: "content_block_delta",
+        data: {
+          type: "content_block_delta",
+          index: 0,
+          delta: { type: "text_delta", text: "before" },
+        },
+      },
+    ])
+    expect(frames.some((frame) => frame.data.type === "message_delta")).toBe(false)
+    expect(frames.some((frame) => frame.data.type === "message_stop")).toBe(false)
   })
 })
 

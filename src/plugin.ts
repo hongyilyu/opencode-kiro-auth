@@ -1,5 +1,5 @@
 import type { Config, Hooks, PluginInput } from "@opencode-ai/plugin"
-import { API_PROVIDER_ID, PROVIDER_ID, DEFAULT_MODEL, resolveRateLimitRetryAfter } from "./constants"
+import { API_PROVIDER_ID, PROVIDER_ID, DEFAULT_MODEL } from "./constants"
 import {
   beginDeviceAuthorization,
   completeDeviceAuthorization,
@@ -17,6 +17,7 @@ import { toKiroPayload, kiroToAnthropicStream, mapKiroError, preflightKiroRespon
 import { resolveContextLimit } from "./limits"
 import { createTools, type KiroToolContext } from "./tools"
 import { createKiroDebugContext, kiroDebug, redactKiroSecrets } from "./debug"
+import { resolveRetryAfter } from "./events"
 
 /** Internal header carrying a validated opencode variant to the fetch interceptor as Kiro effort. */
 const EFFORT_HEADER = "x-kiro-effort"
@@ -223,7 +224,7 @@ export function createKiroFetch(
       const headers = new Headers({ "content-type": "application/json" })
       const retryAfter =
         mapped.status === 429
-          ? resolveRateLimitRetryAfter(response.headers.get("retry-after"))
+          ? resolveRetryAfter({ header: response.headers.get("retry-after") })
           : response.headers.get("retry-after")
       if (retryAfter) headers.set("retry-after", retryAfter)
       return new Response(mapped.body, { status: mapped.status, headers })
