@@ -3,14 +3,14 @@
 exports[`request payload golden corpus maps a plain text turn 1`] = `
 "{
   "conversationState": {
-    "conversationId": "<conversation-id>",
+    "conversationId": "00000000-0000-4000-8000-000000000001",
     "currentMessage": {
       "userInputMessage": {
-        "content": "--- CONTEXT ENTRY BEGIN ---\\nCurrent time: <timestamp>\\n--- CONTEXT ENTRY END ---\\n\\n--- USER MESSAGE BEGIN ---\\ncontinue--- USER MESSAGE END ---",
+        "content": "--- CONTEXT ENTRY BEGIN ---\\nCurrent time: Friday, 2026-06-12T20:09:05.270+07:00\\n--- CONTEXT ENTRY END ---\\n\\n--- USER MESSAGE BEGIN ---\\ncontinue--- USER MESSAGE END ---",
         "userInputMessageContext": {
           "envState": {
             "operatingSystem": "linux",
-            "currentWorkingDirectory": "<cwd>",
+            "currentWorkingDirectory": "/golden/cwd",
             "environmentVariables": []
           }
         },
@@ -25,7 +25,7 @@ exports[`request payload golden corpus maps a plain text turn 1`] = `
           "userInputMessageContext": {
             "envState": {
               "operatingSystem": "linux",
-              "currentWorkingDirectory": "<cwd>",
+              "currentWorkingDirectory": "/golden/cwd",
               "environmentVariables": []
             }
           },
@@ -40,7 +40,7 @@ exports[`request payload golden corpus maps a plain text turn 1`] = `
       }
     ],
     "chatTriggerType": "MANUAL",
-    "agentContinuationId": "<continuation-id>",
+    "agentContinuationId": "00000000-0000-4000-8000-000000000002",
     "agentTaskType": "vibe"
   }
 }"
@@ -49,14 +49,14 @@ exports[`request payload golden corpus maps a plain text turn 1`] = `
 exports[`request payload golden corpus folds system text into the first user turn 1`] = `
 "{
   "conversationState": {
-    "conversationId": "<conversation-id>",
+    "conversationId": "00000000-0000-4000-8000-000000000001",
     "currentMessage": {
       "userInputMessage": {
-        "content": "--- CONTEXT ENTRY BEGIN ---\\nCurrent time: <timestamp>\\n--- CONTEXT ENTRY END ---\\n\\n--- USER MESSAGE BEGIN ---\\nFollow the rules.\\nStart.--- USER MESSAGE END ---",
+        "content": "--- CONTEXT ENTRY BEGIN ---\\nCurrent time: Friday, 2026-06-12T20:09:05.270+07:00\\n--- CONTEXT ENTRY END ---\\n\\n--- USER MESSAGE BEGIN ---\\nFollow the rules.\\nStart.--- USER MESSAGE END ---",
         "userInputMessageContext": {
           "envState": {
             "operatingSystem": "linux",
-            "currentWorkingDirectory": "<cwd>",
+            "currentWorkingDirectory": "/golden/cwd",
             "environmentVariables": []
           }
         },
@@ -66,7 +66,7 @@ exports[`request payload golden corpus folds system text into the first user tur
     },
     "history": [],
     "chatTriggerType": "MANUAL",
-    "agentContinuationId": "<continuation-id>",
+    "agentContinuationId": "00000000-0000-4000-8000-000000000002",
     "agentTaskType": "vibe"
   }
 }"
@@ -75,14 +75,14 @@ exports[`request payload golden corpus folds system text into the first user tur
 exports[`request payload golden corpus maps a tool-result continuation 1`] = `
 "{
   "conversationState": {
-    "conversationId": "<conversation-id>",
+    "conversationId": "00000000-0000-4000-8000-000000000001",
     "currentMessage": {
       "userInputMessage": {
         "content": "",
         "userInputMessageContext": {
           "envState": {
             "operatingSystem": "linux",
-            "currentWorkingDirectory": "<cwd>",
+            "currentWorkingDirectory": "/golden/cwd",
             "environmentVariables": []
           },
           "toolResults": [
@@ -121,7 +121,7 @@ exports[`request payload golden corpus maps a tool-result continuation 1`] = `
           "userInputMessageContext": {
             "envState": {
               "operatingSystem": "linux",
-              "currentWorkingDirectory": "<cwd>",
+              "currentWorkingDirectory": "/golden/cwd",
               "environmentVariables": []
             }
           },
@@ -145,7 +145,7 @@ exports[`request payload golden corpus maps a tool-result continuation 1`] = `
       }
     ],
     "chatTriggerType": "MANUAL",
-    "agentContinuationId": "<continuation-id>",
+    "agentContinuationId": "00000000-0000-4000-8000-000000000002",
     "agentTaskType": "vibe"
   }
 }"
@@ -154,14 +154,14 @@ exports[`request payload golden corpus maps a tool-result continuation 1`] = `
 exports[`request payload golden corpus splits a mixed retry turn 1`] = `
 "{
   "conversationState": {
-    "conversationId": "<conversation-id>",
+    "conversationId": "00000000-0000-4000-8000-000000000001",
     "currentMessage": {
       "userInputMessage": {
-        "content": "--- CONTEXT ENTRY BEGIN ---\\nCurrent time: <timestamp>\\n--- CONTEXT ENTRY END ---\\n\\n--- USER MESSAGE BEGIN ---\\nTry again with details.--- USER MESSAGE END ---",
+        "content": "--- CONTEXT ENTRY BEGIN ---\\nCurrent time: Friday, 2026-06-12T20:09:05.270+07:00\\n--- CONTEXT ENTRY END ---\\n\\n--- USER MESSAGE BEGIN ---\\nTry again with details.--- USER MESSAGE END ---",
         "userInputMessageContext": {
           "envState": {
             "operatingSystem": "linux",
-            "currentWorkingDirectory": "<cwd>",
+            "currentWorkingDirectory": "/golden/cwd",
             "environmentVariables": []
           },
           "tools": [
@@ -189,7 +189,7 @@ exports[`request payload golden corpus splits a mixed retry turn 1`] = `
           "userInputMessageContext": {
             "envState": {
               "operatingSystem": "linux",
-              "currentWorkingDirectory": "<cwd>",
+              "currentWorkingDirectory": "/golden/cwd",
               "environmentVariables": []
             }
           },
@@ -217,7 +217,7 @@ exports[`request payload golden corpus splits a mixed retry turn 1`] = `
           "userInputMessageContext": {
             "envState": {
               "operatingSystem": "linux",
-              "currentWorkingDirectory": "<cwd>",
+              "currentWorkingDirectory": "/golden/cwd",
               "environmentVariables": []
             },
             "toolResults": [
@@ -243,7 +243,7 @@ exports[`request payload golden corpus splits a mixed retry turn 1`] = `
       }
     ],
     "chatTriggerType": "MANUAL",
-    "agentContinuationId": "<continuation-id>",
+    "agentContinuationId": "00000000-0000-4000-8000-000000000002",
     "agentTaskType": "vibe"
   }
 }"
@@ -252,14 +252,14 @@ exports[`request payload golden corpus splits a mixed retry turn 1`] = `
 exports[`request payload golden corpus degrades an orphaned tool use 1`] = `
 "{
   "conversationState": {
-    "conversationId": "<conversation-id>",
+    "conversationId": "00000000-0000-4000-8000-000000000001",
     "currentMessage": {
       "userInputMessage": {
-        "content": "--- CONTEXT ENTRY BEGIN ---\\nCurrent time: <timestamp>\\n--- CONTEXT ENTRY END ---\\n\\n--- USER MESSAGE BEGIN ---\\nWhat happened?--- USER MESSAGE END ---",
+        "content": "--- CONTEXT ENTRY BEGIN ---\\nCurrent time: Friday, 2026-06-12T20:09:05.270+07:00\\n--- CONTEXT ENTRY END ---\\n\\n--- USER MESSAGE BEGIN ---\\nWhat happened?--- USER MESSAGE END ---",
         "userInputMessageContext": {
           "envState": {
             "operatingSystem": "linux",
-            "currentWorkingDirectory": "<cwd>",
+            "currentWorkingDirectory": "/golden/cwd",
             "environmentVariables": []
           },
           "tools": [
@@ -287,7 +287,7 @@ exports[`request payload golden corpus degrades an orphaned tool use 1`] = `
           "userInputMessageContext": {
             "envState": {
               "operatingSystem": "linux",
-              "currentWorkingDirectory": "<cwd>",
+              "currentWorkingDirectory": "/golden/cwd",
               "environmentVariables": []
             }
           },
@@ -302,7 +302,7 @@ exports[`request payload golden corpus degrades an orphaned tool use 1`] = `
       }
     ],
     "chatTriggerType": "MANUAL",
-    "agentContinuationId": "<continuation-id>",
+    "agentContinuationId": "00000000-0000-4000-8000-000000000002",
     "agentTaskType": "vibe"
   }
 }"
@@ -311,14 +311,14 @@ exports[`request payload golden corpus degrades an orphaned tool use 1`] = `
 exports[`request payload golden corpus degrades tool blocks during tool-less compaction 1`] = `
 "{
   "conversationState": {
-    "conversationId": "<conversation-id>",
+    "conversationId": "00000000-0000-4000-8000-000000000001",
     "currentMessage": {
       "userInputMessage": {
-        "content": "--- CONTEXT ENTRY BEGIN ---\\nCurrent time: <timestamp>\\n--- CONTEXT ENTRY END ---\\n\\n--- USER MESSAGE BEGIN ---\\nSummarize.--- USER MESSAGE END ---",
+        "content": "--- CONTEXT ENTRY BEGIN ---\\nCurrent time: Friday, 2026-06-12T20:09:05.270+07:00\\n--- CONTEXT ENTRY END ---\\n\\n--- USER MESSAGE BEGIN ---\\nSummarize.--- USER MESSAGE END ---",
         "userInputMessageContext": {
           "envState": {
             "operatingSystem": "linux",
-            "currentWorkingDirectory": "<cwd>",
+            "currentWorkingDirectory": "/golden/cwd",
             "environmentVariables": []
           }
         },
@@ -338,7 +338,7 @@ exports[`request payload golden corpus degrades tool blocks during tool-less com
           "userInputMessageContext": {
             "envState": {
               "operatingSystem": "linux",
-              "currentWorkingDirectory": "<cwd>",
+              "currentWorkingDirectory": "/golden/cwd",
               "environmentVariables": []
             }
           },
@@ -348,7 +348,7 @@ exports[`request payload golden corpus degrades tool blocks during tool-less com
       }
     ],
     "chatTriggerType": "MANUAL",
-    "agentContinuationId": "<continuation-id>",
+    "agentContinuationId": "00000000-0000-4000-8000-000000000002",
     "agentTaskType": "vibe"
   }
 }"
@@ -357,14 +357,14 @@ exports[`request payload golden corpus degrades tool blocks during tool-less com
 exports[`request payload golden corpus trims images across the retention boundary 1`] = `
 "{
   "conversationState": {
-    "conversationId": "<conversation-id>",
+    "conversationId": "00000000-0000-4000-8000-000000000001",
     "currentMessage": {
       "userInputMessage": {
-        "content": "--- CONTEXT ENTRY BEGIN ---\\nCurrent time: <timestamp>\\n--- CONTEXT ENTRY END ---\\n\\n--- USER MESSAGE BEGIN ---\\nnew--- USER MESSAGE END ---",
+        "content": "--- CONTEXT ENTRY BEGIN ---\\nCurrent time: Friday, 2026-06-12T20:09:05.270+07:00\\n--- CONTEXT ENTRY END ---\\n\\n--- USER MESSAGE BEGIN ---\\nnew--- USER MESSAGE END ---",
         "userInputMessageContext": {
           "envState": {
             "operatingSystem": "linux",
-            "currentWorkingDirectory": "<cwd>",
+            "currentWorkingDirectory": "/golden/cwd",
             "environmentVariables": []
           },
           "tools": [
@@ -400,7 +400,7 @@ exports[`request payload golden corpus trims images across the retention boundar
           "userInputMessageContext": {
             "envState": {
               "operatingSystem": "linux",
-              "currentWorkingDirectory": "<cwd>",
+              "currentWorkingDirectory": "/golden/cwd",
               "environmentVariables": []
             }
           },
@@ -428,7 +428,7 @@ exports[`request payload golden corpus trims images across the retention boundar
           "userInputMessageContext": {
             "envState": {
               "operatingSystem": "linux",
-              "currentWorkingDirectory": "<cwd>",
+              "currentWorkingDirectory": "/golden/cwd",
               "environmentVariables": []
             },
             "toolResults": [
@@ -454,7 +454,7 @@ exports[`request payload golden corpus trims images across the retention boundar
       }
     ],
     "chatTriggerType": "MANUAL",
-    "agentContinuationId": "<continuation-id>",
+    "agentContinuationId": "00000000-0000-4000-8000-000000000002",
     "agentTaskType": "vibe"
   }
 }"
@@ -463,14 +463,14 @@ exports[`request payload golden corpus trims images across the retention boundar
 exports[`request payload golden corpus preserves a tool-result image inside the retention window 1`] = `
 "{
   "conversationState": {
-    "conversationId": "<conversation-id>",
+    "conversationId": "00000000-0000-4000-8000-000000000001",
     "currentMessage": {
       "userInputMessage": {
         "content": "",
         "userInputMessageContext": {
           "envState": {
             "operatingSystem": "linux",
-            "currentWorkingDirectory": "<cwd>",
+            "currentWorkingDirectory": "/golden/cwd",
             "environmentVariables": []
           },
           "toolResults": [
@@ -509,7 +509,7 @@ exports[`request payload golden corpus preserves a tool-result image inside the 
           "userInputMessageContext": {
             "envState": {
               "operatingSystem": "linux",
-              "currentWorkingDirectory": "<cwd>",
+              "currentWorkingDirectory": "/golden/cwd",
               "environmentVariables": []
             }
           },
@@ -533,7 +533,7 @@ exports[`request payload golden corpus preserves a tool-result image inside the 
       }
     ],
     "chatTriggerType": "MANUAL",
-    "agentContinuationId": "<continuation-id>",
+    "agentContinuationId": "00000000-0000-4000-8000-000000000002",
     "agentTaskType": "vibe"
   }
 }"
@@ -542,14 +542,14 @@ exports[`request payload golden corpus preserves a tool-result image inside the 
 exports[`request payload golden corpus replays signature-only reasoning 1`] = `
 "{
   "conversationState": {
-    "conversationId": "<conversation-id>",
+    "conversationId": "00000000-0000-4000-8000-000000000001",
     "currentMessage": {
       "userInputMessage": {
-        "content": "--- CONTEXT ENTRY BEGIN ---\\nCurrent time: <timestamp>\\n--- CONTEXT ENTRY END ---\\n\\n--- USER MESSAGE BEGIN ---\\ncontinue--- USER MESSAGE END ---",
+        "content": "--- CONTEXT ENTRY BEGIN ---\\nCurrent time: Friday, 2026-06-12T20:09:05.270+07:00\\n--- CONTEXT ENTRY END ---\\n\\n--- USER MESSAGE BEGIN ---\\ncontinue--- USER MESSAGE END ---",
         "userInputMessageContext": {
           "envState": {
             "operatingSystem": "linux",
-            "currentWorkingDirectory": "<cwd>",
+            "currentWorkingDirectory": "/golden/cwd",
             "environmentVariables": []
           }
         },
@@ -564,7 +564,7 @@ exports[`request payload golden corpus replays signature-only reasoning 1`] = `
           "userInputMessageContext": {
             "envState": {
               "operatingSystem": "linux",
-              "currentWorkingDirectory": "<cwd>",
+              "currentWorkingDirectory": "/golden/cwd",
               "environmentVariables": []
             }
           },
@@ -585,7 +585,7 @@ exports[`request payload golden corpus replays signature-only reasoning 1`] = `
       }
     ],
     "chatTriggerType": "MANUAL",
-    "agentContinuationId": "<continuation-id>",
+    "agentContinuationId": "00000000-0000-4000-8000-000000000002",
     "agentTaskType": "vibe"
   }
 }"
@@ -595,14 +595,14 @@ exports[`request payload golden corpus maps Claude and GPT effort variants 1`] =
 "{
   "claude": {
     "conversationState": {
-      "conversationId": "<conversation-id>",
+      "conversationId": "00000000-0000-4000-8000-000000000001",
       "currentMessage": {
         "userInputMessage": {
-          "content": "--- CONTEXT ENTRY BEGIN ---\\nCurrent time: <timestamp>\\n--- CONTEXT ENTRY END ---\\n\\n--- USER MESSAGE BEGIN ---\\nwork--- USER MESSAGE END ---",
+          "content": "--- CONTEXT ENTRY BEGIN ---\\nCurrent time: Friday, 2026-06-12T20:09:05.270+07:00\\n--- CONTEXT ENTRY END ---\\n\\n--- USER MESSAGE BEGIN ---\\nwork--- USER MESSAGE END ---",
           "userInputMessageContext": {
             "envState": {
               "operatingSystem": "linux",
-              "currentWorkingDirectory": "<cwd>",
+              "currentWorkingDirectory": "/golden/cwd",
               "environmentVariables": []
             }
           },
@@ -612,7 +612,7 @@ exports[`request payload golden corpus maps Claude and GPT effort variants 1`] =
       },
       "history": [],
       "chatTriggerType": "MANUAL",
-      "agentContinuationId": "<continuation-id>",
+      "agentContinuationId": "00000000-0000-4000-8000-000000000002",
       "agentTaskType": "vibe"
     },
     "additionalModelRequestFields": {
@@ -627,14 +627,14 @@ exports[`request payload golden corpus maps Claude and GPT effort variants 1`] =
   },
   "gpt": {
     "conversationState": {
-      "conversationId": "<conversation-id>",
+      "conversationId": "00000000-0000-4000-8000-000000000001",
       "currentMessage": {
         "userInputMessage": {
-          "content": "--- CONTEXT ENTRY BEGIN ---\\nCurrent time: <timestamp>\\n--- CONTEXT ENTRY END ---\\n\\n--- USER MESSAGE BEGIN ---\\nwork--- USER MESSAGE END ---",
+          "content": "--- CONTEXT ENTRY BEGIN ---\\nCurrent time: Friday, 2026-06-12T20:09:05.270+07:00\\n--- CONTEXT ENTRY END ---\\n\\n--- USER MESSAGE BEGIN ---\\nwork--- USER MESSAGE END ---",
           "userInputMessageContext": {
             "envState": {
               "operatingSystem": "linux",
-              "currentWorkingDirectory": "<cwd>",
+              "currentWorkingDirectory": "/golden/cwd",
               "environmentVariables": []
             }
           },
@@ -644,7 +644,7 @@ exports[`request payload golden corpus maps Claude and GPT effort variants 1`] =
       },
       "history": [],
       "chatTriggerType": "MANUAL",
-      "agentContinuationId": "<continuation-id>",
+      "agentContinuationId": "00000000-0000-4000-8000-000000000002",
       "agentTaskType": "vibe"
     },
     "additionalModelRequestFields": {
@@ -659,14 +659,14 @@ exports[`request payload golden corpus maps Claude and GPT effort variants 1`] =
 exports[`request payload golden corpus captures the module-load working directory 1`] = `
 "{
   "conversationState": {
-    "conversationId": "<conversation-id>",
+    "conversationId": "00000000-0000-4000-8000-000000000001",
     "currentMessage": {
       "userInputMessage": {
-        "content": "--- CONTEXT ENTRY BEGIN ---\\nCurrent time: <timestamp>\\n--- CONTEXT ENTRY END ---\\n\\n--- USER MESSAGE BEGIN ---\\nwhere am I?--- USER MESSAGE END ---",
+        "content": "--- CONTEXT ENTRY BEGIN ---\\nCurrent time: Friday, 2026-06-12T20:09:05.270+07:00\\n--- CONTEXT ENTRY END ---\\n\\n--- USER MESSAGE BEGIN ---\\nwhere am I?--- USER MESSAGE END ---",
         "userInputMessageContext": {
           "envState": {
             "operatingSystem": "linux",
-            "currentWorkingDirectory": "<module-load-cwd>",
+            "currentWorkingDirectory": "/module/load/cwd",
             "environmentVariables": []
           }
         },
@@ -676,7 +676,7 @@ exports[`request payload golden corpus captures the module-load working director
     },
     "history": [],
     "chatTriggerType": "MANUAL",
-    "agentContinuationId": "<continuation-id>",
+    "agentContinuationId": "00000000-0000-4000-8000-000000000002",
     "agentTaskType": "vibe"
   }
 }"

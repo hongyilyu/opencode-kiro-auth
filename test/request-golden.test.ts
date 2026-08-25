@@ -3,6 +3,9 @@ import { toKiroPayload } from "../src/transform"
 import { isolateEnv } from "./support/isolation"
 
 const MODULE_CWD = process.cwd()
+const GOLDEN_CONVERSATION_ID = "00000000-0000-4000-8000-000000000001"
+const GOLDEN_CONTINUATION_ID = "00000000-0000-4000-8000-000000000002"
+const GOLDEN_TIMESTAMP = "Friday, 2026-06-12T20:09:05.270+07:00"
 const IMAGE = (data: string) => ({
   type: "image",
   source: { type: "base64", media_type: "image/png", data },
@@ -11,8 +14,8 @@ const BASH_TOOL = { name: "bash", description: "Run a command", input_schema: { 
 
 function normalizedPayloadJson(body: any, effort?: string, preserveCwd = false): string {
   const payload: any = structuredClone(toKiroPayload(body, effort))
-  payload.conversationState.conversationId = "<conversation-id>"
-  payload.conversationState.agentContinuationId = "<continuation-id>"
+  payload.conversationState.conversationId = GOLDEN_CONVERSATION_ID
+  payload.conversationState.agentContinuationId = GOLDEN_CONTINUATION_ID
 
   const normalize = (value: unknown): void => {
     if (!value || typeof value !== "object") return
@@ -23,10 +26,10 @@ function normalizedPayloadJson(body: any, effort?: string, preserveCwd = false):
 
     const object = value as Record<string, unknown>
     if (typeof object.content === "string") {
-      object.content = object.content.replace(/Current time: [^\n]+/, "Current time: <timestamp>")
+      object.content = object.content.replace(/Current time: [^\n]+/, `Current time: ${GOLDEN_TIMESTAMP}`)
     }
     if (object.currentWorkingDirectory === MODULE_CWD) {
-      object.currentWorkingDirectory = preserveCwd ? "<module-load-cwd>" : "<cwd>"
+      object.currentWorkingDirectory = preserveCwd ? "/module/load/cwd" : "/golden/cwd"
     }
     Object.values(object).forEach(normalize)
   }
