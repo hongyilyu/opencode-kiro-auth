@@ -23,6 +23,20 @@ load-bearing: use them exactly.
   surfaces. A pre-output generic stream error remains a 200 response with a terminal
   SSE error frame.
 
+## Request mapping
+
+- **KiroRequestPayload** — the typed wire commitment emitted by `src/request.ts` for
+  `GenerateAssistantResponse`. It names only the user and assistant entry shapes we
+  produce, not Kiro's full schema.
+- **History normalizer** — the pure request-side operation over copied Anthropic
+  messages. It splits mixed retry turns, folds the system prompt, degrades invalid
+  tool pairs, and applies image retention in one internally ordered pass sequence.
+- **Image retention policy** — only the most recent configured image-bearing turns
+  retain image bytes. A turn counts when images are top-level or inside a structured
+  `tool_result`; older images use `[image omitted]` at both levels (nested images are
+  replaced before tool-result serialization). `KIRO_KEEP_IMAGE_TURNS=0` strips all
+  images.
+
 ## Output predicates (deliberately two — intents differ)
 
 - **beginsAssistantOutput(e)** — "safe to stop buffering and start streaming."
@@ -94,3 +108,7 @@ load-bearing: use them exactly.
 - **D6** The response pipeline has one seam (`kiroResponseToAnthropic`): events are
   decoded exactly once, and reader ownership lives in exactly one function. Byte
   replay was deleted because it existed only to decouple two halves of one pipeline.
+- **D7** Request normalization is one pure function over copies; mutation and pass
+  ordering are implementation details. The Anthropic input remains loosely typed at
+  the boundary, where defensive checks are the validation, while `KiroRequestPayload`
+  is the typed output contract.

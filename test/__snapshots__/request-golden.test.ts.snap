@@ -1,0 +1,683 @@
+// Bun Snapshot v1, https://bun.sh/docs/test/snapshots
+
+exports[`request payload golden corpus maps a plain text turn 1`] = `
+"{
+  "conversationState": {
+    "conversationId": "00000000-0000-4000-8000-000000000001",
+    "currentMessage": {
+      "userInputMessage": {
+        "content": "--- CONTEXT ENTRY BEGIN ---\\nCurrent time: Friday, 2026-06-12T20:09:05.270+07:00\\n--- CONTEXT ENTRY END ---\\n\\n--- USER MESSAGE BEGIN ---\\ncontinue--- USER MESSAGE END ---",
+        "userInputMessageContext": {
+          "envState": {
+            "operatingSystem": "linux",
+            "currentWorkingDirectory": "/golden/cwd",
+            "environmentVariables": []
+          }
+        },
+        "origin": "KIRO_CLI",
+        "modelId": "claude-sonnet-4.6"
+      }
+    },
+    "history": [
+      {
+        "userInputMessage": {
+          "content": "hello",
+          "userInputMessageContext": {
+            "envState": {
+              "operatingSystem": "linux",
+              "currentWorkingDirectory": "/golden/cwd",
+              "environmentVariables": []
+            }
+          },
+          "origin": "KIRO_CLI",
+          "modelId": "claude-sonnet-4.6"
+        }
+      },
+      {
+        "assistantResponseMessage": {
+          "content": "hi"
+        }
+      }
+    ],
+    "chatTriggerType": "MANUAL",
+    "agentContinuationId": "00000000-0000-4000-8000-000000000002",
+    "agentTaskType": "vibe"
+  }
+}"
+`;
+
+exports[`request payload golden corpus folds system text into the first user turn 1`] = `
+"{
+  "conversationState": {
+    "conversationId": "00000000-0000-4000-8000-000000000001",
+    "currentMessage": {
+      "userInputMessage": {
+        "content": "--- CONTEXT ENTRY BEGIN ---\\nCurrent time: Friday, 2026-06-12T20:09:05.270+07:00\\n--- CONTEXT ENTRY END ---\\n\\n--- USER MESSAGE BEGIN ---\\nFollow the rules.\\nStart.--- USER MESSAGE END ---",
+        "userInputMessageContext": {
+          "envState": {
+            "operatingSystem": "linux",
+            "currentWorkingDirectory": "/golden/cwd",
+            "environmentVariables": []
+          }
+        },
+        "origin": "KIRO_CLI",
+        "modelId": "claude-sonnet-4.6"
+      }
+    },
+    "history": [],
+    "chatTriggerType": "MANUAL",
+    "agentContinuationId": "00000000-0000-4000-8000-000000000002",
+    "agentTaskType": "vibe"
+  }
+}"
+`;
+
+exports[`request payload golden corpus maps a tool-result continuation 1`] = `
+"{
+  "conversationState": {
+    "conversationId": "00000000-0000-4000-8000-000000000001",
+    "currentMessage": {
+      "userInputMessage": {
+        "content": "",
+        "userInputMessageContext": {
+          "envState": {
+            "operatingSystem": "linux",
+            "currentWorkingDirectory": "/golden/cwd",
+            "environmentVariables": []
+          },
+          "toolResults": [
+            {
+              "toolUseId": "tool-1",
+              "content": [
+                {
+                  "text": "a.ts"
+                }
+              ],
+              "status": "success"
+            }
+          ],
+          "tools": [
+            {
+              "toolSpecification": {
+                "name": "bash",
+                "description": "Run a command",
+                "inputSchema": {
+                  "json": {
+                    "type": "object"
+                  }
+                }
+              }
+            }
+          ]
+        },
+        "origin": "KIRO_CLI",
+        "modelId": "claude-sonnet-4.6"
+      }
+    },
+    "history": [
+      {
+        "userInputMessage": {
+          "content": "list files",
+          "userInputMessageContext": {
+            "envState": {
+              "operatingSystem": "linux",
+              "currentWorkingDirectory": "/golden/cwd",
+              "environmentVariables": []
+            }
+          },
+          "origin": "KIRO_CLI",
+          "modelId": "claude-sonnet-4.6"
+        }
+      },
+      {
+        "assistantResponseMessage": {
+          "content": "",
+          "toolUses": [
+            {
+              "toolUseId": "tool-1",
+              "name": "bash",
+              "input": {
+                "command": "ls"
+              }
+            }
+          ]
+        }
+      }
+    ],
+    "chatTriggerType": "MANUAL",
+    "agentContinuationId": "00000000-0000-4000-8000-000000000002",
+    "agentTaskType": "vibe"
+  }
+}"
+`;
+
+exports[`request payload golden corpus splits a mixed retry turn 1`] = `
+"{
+  "conversationState": {
+    "conversationId": "00000000-0000-4000-8000-000000000001",
+    "currentMessage": {
+      "userInputMessage": {
+        "content": "--- CONTEXT ENTRY BEGIN ---\\nCurrent time: Friday, 2026-06-12T20:09:05.270+07:00\\n--- CONTEXT ENTRY END ---\\n\\n--- USER MESSAGE BEGIN ---\\nTry again with details.--- USER MESSAGE END ---",
+        "userInputMessageContext": {
+          "envState": {
+            "operatingSystem": "linux",
+            "currentWorkingDirectory": "/golden/cwd",
+            "environmentVariables": []
+          },
+          "tools": [
+            {
+              "toolSpecification": {
+                "name": "bash",
+                "description": "Run a command",
+                "inputSchema": {
+                  "json": {
+                    "type": "object"
+                  }
+                }
+              }
+            }
+          ]
+        },
+        "origin": "KIRO_CLI",
+        "modelId": "claude-sonnet-4.6"
+      }
+    },
+    "history": [
+      {
+        "userInputMessage": {
+          "content": "list files",
+          "userInputMessageContext": {
+            "envState": {
+              "operatingSystem": "linux",
+              "currentWorkingDirectory": "/golden/cwd",
+              "environmentVariables": []
+            }
+          },
+          "origin": "KIRO_CLI",
+          "modelId": "claude-sonnet-4.6"
+        }
+      },
+      {
+        "assistantResponseMessage": {
+          "content": "",
+          "toolUses": [
+            {
+              "toolUseId": "tool-1",
+              "name": "bash",
+              "input": {
+                "command": "ls"
+              }
+            }
+          ]
+        }
+      },
+      {
+        "userInputMessage": {
+          "content": "",
+          "userInputMessageContext": {
+            "envState": {
+              "operatingSystem": "linux",
+              "currentWorkingDirectory": "/golden/cwd",
+              "environmentVariables": []
+            },
+            "toolResults": [
+              {
+                "toolUseId": "tool-1",
+                "content": [
+                  {
+                    "text": "a.ts"
+                  }
+                ],
+                "status": "success"
+              }
+            ]
+          },
+          "origin": "KIRO_CLI",
+          "modelId": "claude-sonnet-4.6"
+        }
+      },
+      {
+        "assistantResponseMessage": {
+          "content": "The tool calls completed before the next user message."
+        }
+      }
+    ],
+    "chatTriggerType": "MANUAL",
+    "agentContinuationId": "00000000-0000-4000-8000-000000000002",
+    "agentTaskType": "vibe"
+  }
+}"
+`;
+
+exports[`request payload golden corpus degrades an orphaned tool use 1`] = `
+"{
+  "conversationState": {
+    "conversationId": "00000000-0000-4000-8000-000000000001",
+    "currentMessage": {
+      "userInputMessage": {
+        "content": "--- CONTEXT ENTRY BEGIN ---\\nCurrent time: Friday, 2026-06-12T20:09:05.270+07:00\\n--- CONTEXT ENTRY END ---\\n\\n--- USER MESSAGE BEGIN ---\\nWhat happened?--- USER MESSAGE END ---",
+        "userInputMessageContext": {
+          "envState": {
+            "operatingSystem": "linux",
+            "currentWorkingDirectory": "/golden/cwd",
+            "environmentVariables": []
+          },
+          "tools": [
+            {
+              "toolSpecification": {
+                "name": "bash",
+                "description": "Run a command",
+                "inputSchema": {
+                  "json": {
+                    "type": "object"
+                  }
+                }
+              }
+            }
+          ]
+        },
+        "origin": "KIRO_CLI",
+        "modelId": "claude-sonnet-4.6"
+      }
+    },
+    "history": [
+      {
+        "userInputMessage": {
+          "content": "list files",
+          "userInputMessageContext": {
+            "envState": {
+              "operatingSystem": "linux",
+              "currentWorkingDirectory": "/golden/cwd",
+              "environmentVariables": []
+            }
+          },
+          "origin": "KIRO_CLI",
+          "modelId": "claude-sonnet-4.6"
+        }
+      },
+      {
+        "assistantResponseMessage": {
+          "content": "[called bash {\\"command\\":\\"ls\\"}]"
+        }
+      }
+    ],
+    "chatTriggerType": "MANUAL",
+    "agentContinuationId": "00000000-0000-4000-8000-000000000002",
+    "agentTaskType": "vibe"
+  }
+}"
+`;
+
+exports[`request payload golden corpus degrades tool blocks during tool-less compaction 1`] = `
+"{
+  "conversationState": {
+    "conversationId": "00000000-0000-4000-8000-000000000001",
+    "currentMessage": {
+      "userInputMessage": {
+        "content": "--- CONTEXT ENTRY BEGIN ---\\nCurrent time: Friday, 2026-06-12T20:09:05.270+07:00\\n--- CONTEXT ENTRY END ---\\n\\n--- USER MESSAGE BEGIN ---\\nSummarize.--- USER MESSAGE END ---",
+        "userInputMessageContext": {
+          "envState": {
+            "operatingSystem": "linux",
+            "currentWorkingDirectory": "/golden/cwd",
+            "environmentVariables": []
+          }
+        },
+        "origin": "KIRO_CLI",
+        "modelId": "claude-sonnet-4.6"
+      }
+    },
+    "history": [
+      {
+        "assistantResponseMessage": {
+          "content": "[called bash {\\"command\\":\\"ls\\"}]"
+        }
+      },
+      {
+        "userInputMessage": {
+          "content": "[tool result]\\na.ts",
+          "userInputMessageContext": {
+            "envState": {
+              "operatingSystem": "linux",
+              "currentWorkingDirectory": "/golden/cwd",
+              "environmentVariables": []
+            }
+          },
+          "origin": "KIRO_CLI",
+          "modelId": "claude-sonnet-4.6"
+        }
+      }
+    ],
+    "chatTriggerType": "MANUAL",
+    "agentContinuationId": "00000000-0000-4000-8000-000000000002",
+    "agentTaskType": "vibe"
+  }
+}"
+`;
+
+exports[`request payload golden corpus trims images across the retention boundary 1`] = `
+"{
+  "conversationState": {
+    "conversationId": "00000000-0000-4000-8000-000000000001",
+    "currentMessage": {
+      "userInputMessage": {
+        "content": "--- CONTEXT ENTRY BEGIN ---\\nCurrent time: Friday, 2026-06-12T20:09:05.270+07:00\\n--- CONTEXT ENTRY END ---\\n\\n--- USER MESSAGE BEGIN ---\\nnew--- USER MESSAGE END ---",
+        "userInputMessageContext": {
+          "envState": {
+            "operatingSystem": "linux",
+            "currentWorkingDirectory": "/golden/cwd",
+            "environmentVariables": []
+          },
+          "tools": [
+            {
+              "toolSpecification": {
+                "name": "bash",
+                "description": "Run a command",
+                "inputSchema": {
+                  "json": {
+                    "type": "object"
+                  }
+                }
+              }
+            }
+          ]
+        },
+        "origin": "KIRO_CLI",
+        "modelId": "claude-sonnet-4.6",
+        "images": [
+          {
+            "format": "png",
+            "source": {
+              "bytes": "NEW_IMAGE"
+            }
+          }
+        ]
+      }
+    },
+    "history": [
+      {
+        "userInputMessage": {
+          "content": "capture",
+          "userInputMessageContext": {
+            "envState": {
+              "operatingSystem": "linux",
+              "currentWorkingDirectory": "/golden/cwd",
+              "environmentVariables": []
+            }
+          },
+          "origin": "KIRO_CLI",
+          "modelId": "claude-sonnet-4.6"
+        }
+      },
+      {
+        "assistantResponseMessage": {
+          "content": "",
+          "toolUses": [
+            {
+              "toolUseId": "shot-1",
+              "name": "bash",
+              "input": {
+                "command": "screenshot"
+              }
+            }
+          ]
+        }
+      },
+      {
+        "userInputMessage": {
+          "content": "",
+          "userInputMessageContext": {
+            "envState": {
+              "operatingSystem": "linux",
+              "currentWorkingDirectory": "/golden/cwd",
+              "environmentVariables": []
+            },
+            "toolResults": [
+              {
+                "toolUseId": "shot-1",
+                "content": [
+                  {
+                    "text": "[{\\"type\\":\\"text\\",\\"text\\":\\"old\\"},{\\"type\\":\\"text\\",\\"text\\":\\"[image omitted]\\"}]"
+                  }
+                ],
+                "status": "success"
+              }
+            ]
+          },
+          "origin": "KIRO_CLI",
+          "modelId": "claude-sonnet-4.6"
+        }
+      },
+      {
+        "assistantResponseMessage": {
+          "content": "captured"
+        }
+      }
+    ],
+    "chatTriggerType": "MANUAL",
+    "agentContinuationId": "00000000-0000-4000-8000-000000000002",
+    "agentTaskType": "vibe"
+  }
+}"
+`;
+
+exports[`request payload golden corpus preserves a tool-result image inside the retention window 1`] = `
+"{
+  "conversationState": {
+    "conversationId": "00000000-0000-4000-8000-000000000001",
+    "currentMessage": {
+      "userInputMessage": {
+        "content": "",
+        "userInputMessageContext": {
+          "envState": {
+            "operatingSystem": "linux",
+            "currentWorkingDirectory": "/golden/cwd",
+            "environmentVariables": []
+          },
+          "toolResults": [
+            {
+              "toolUseId": "shot-1",
+              "content": [
+                {
+                  "text": "[{\\"type\\":\\"text\\",\\"text\\":\\"latest\\"},{\\"type\\":\\"image\\",\\"source\\":{\\"type\\":\\"base64\\",\\"media_type\\":\\"image/png\\",\\"data\\":\\"KEPT_TOOL_IMAGE\\"}}]"
+                }
+              ],
+              "status": "success"
+            }
+          ],
+          "tools": [
+            {
+              "toolSpecification": {
+                "name": "bash",
+                "description": "Run a command",
+                "inputSchema": {
+                  "json": {
+                    "type": "object"
+                  }
+                }
+              }
+            }
+          ]
+        },
+        "origin": "KIRO_CLI",
+        "modelId": "claude-sonnet-4.6"
+      }
+    },
+    "history": [
+      {
+        "userInputMessage": {
+          "content": "capture",
+          "userInputMessageContext": {
+            "envState": {
+              "operatingSystem": "linux",
+              "currentWorkingDirectory": "/golden/cwd",
+              "environmentVariables": []
+            }
+          },
+          "origin": "KIRO_CLI",
+          "modelId": "claude-sonnet-4.6"
+        }
+      },
+      {
+        "assistantResponseMessage": {
+          "content": "",
+          "toolUses": [
+            {
+              "toolUseId": "shot-1",
+              "name": "bash",
+              "input": {
+                "command": "screenshot"
+              }
+            }
+          ]
+        }
+      }
+    ],
+    "chatTriggerType": "MANUAL",
+    "agentContinuationId": "00000000-0000-4000-8000-000000000002",
+    "agentTaskType": "vibe"
+  }
+}"
+`;
+
+exports[`request payload golden corpus replays signature-only reasoning 1`] = `
+"{
+  "conversationState": {
+    "conversationId": "00000000-0000-4000-8000-000000000001",
+    "currentMessage": {
+      "userInputMessage": {
+        "content": "--- CONTEXT ENTRY BEGIN ---\\nCurrent time: Friday, 2026-06-12T20:09:05.270+07:00\\n--- CONTEXT ENTRY END ---\\n\\n--- USER MESSAGE BEGIN ---\\ncontinue--- USER MESSAGE END ---",
+        "userInputMessageContext": {
+          "envState": {
+            "operatingSystem": "linux",
+            "currentWorkingDirectory": "/golden/cwd",
+            "environmentVariables": []
+          }
+        },
+        "origin": "KIRO_CLI",
+        "modelId": "claude-fable-5"
+      }
+    },
+    "history": [
+      {
+        "userInputMessage": {
+          "content": "start",
+          "userInputMessageContext": {
+            "envState": {
+              "operatingSystem": "linux",
+              "currentWorkingDirectory": "/golden/cwd",
+              "environmentVariables": []
+            }
+          },
+          "origin": "KIRO_CLI",
+          "modelId": "claude-fable-5"
+        }
+      },
+      {
+        "assistantResponseMessage": {
+          "content": "done",
+          "reasoningContent": {
+            "reasoningText": {
+              "text": "",
+              "signature": "sig-hidden"
+            }
+          }
+        }
+      }
+    ],
+    "chatTriggerType": "MANUAL",
+    "agentContinuationId": "00000000-0000-4000-8000-000000000002",
+    "agentTaskType": "vibe"
+  }
+}"
+`;
+
+exports[`request payload golden corpus maps Claude and GPT effort variants 1`] = `
+"{
+  "claude": {
+    "conversationState": {
+      "conversationId": "00000000-0000-4000-8000-000000000001",
+      "currentMessage": {
+        "userInputMessage": {
+          "content": "--- CONTEXT ENTRY BEGIN ---\\nCurrent time: Friday, 2026-06-12T20:09:05.270+07:00\\n--- CONTEXT ENTRY END ---\\n\\n--- USER MESSAGE BEGIN ---\\nwork--- USER MESSAGE END ---",
+          "userInputMessageContext": {
+            "envState": {
+              "operatingSystem": "linux",
+              "currentWorkingDirectory": "/golden/cwd",
+              "environmentVariables": []
+            }
+          },
+          "origin": "KIRO_CLI",
+          "modelId": "claude-fable-5"
+        }
+      },
+      "history": [],
+      "chatTriggerType": "MANUAL",
+      "agentContinuationId": "00000000-0000-4000-8000-000000000002",
+      "agentTaskType": "vibe"
+    },
+    "additionalModelRequestFields": {
+      "thinking": {
+        "type": "adaptive",
+        "display": "omitted"
+      },
+      "output_config": {
+        "effort": "max"
+      }
+    }
+  },
+  "gpt": {
+    "conversationState": {
+      "conversationId": "00000000-0000-4000-8000-000000000001",
+      "currentMessage": {
+        "userInputMessage": {
+          "content": "--- CONTEXT ENTRY BEGIN ---\\nCurrent time: Friday, 2026-06-12T20:09:05.270+07:00\\n--- CONTEXT ENTRY END ---\\n\\n--- USER MESSAGE BEGIN ---\\nwork--- USER MESSAGE END ---",
+          "userInputMessageContext": {
+            "envState": {
+              "operatingSystem": "linux",
+              "currentWorkingDirectory": "/golden/cwd",
+              "environmentVariables": []
+            }
+          },
+          "origin": "KIRO_CLI",
+          "modelId": "gpt-5.6-sol"
+        }
+      },
+      "history": [],
+      "chatTriggerType": "MANUAL",
+      "agentContinuationId": "00000000-0000-4000-8000-000000000002",
+      "agentTaskType": "vibe"
+    },
+    "additionalModelRequestFields": {
+      "reasoning": {
+        "effort": "xhigh"
+      }
+    }
+  }
+}"
+`;
+
+exports[`request payload golden corpus captures the working directory for each request 1`] = `
+"{
+  "conversationState": {
+    "conversationId": "00000000-0000-4000-8000-000000000001",
+    "currentMessage": {
+      "userInputMessage": {
+        "content": "--- CONTEXT ENTRY BEGIN ---\\nCurrent time: Friday, 2026-06-12T20:09:05.270+07:00\\n--- CONTEXT ENTRY END ---\\n\\n--- USER MESSAGE BEGIN ---\\nwhere am I?--- USER MESSAGE END ---",
+        "userInputMessageContext": {
+          "envState": {
+            "operatingSystem": "linux",
+            "currentWorkingDirectory": "/request/cwd",
+            "environmentVariables": []
+          }
+        },
+        "origin": "KIRO_CLI",
+        "modelId": "claude-sonnet-4.6"
+      }
+    },
+    "history": [],
+    "chatTriggerType": "MANUAL",
+    "agentContinuationId": "00000000-0000-4000-8000-000000000002",
+    "agentTaskType": "vibe"
+  }
+}"
+`;

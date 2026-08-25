@@ -2,7 +2,7 @@ import { describe, expect, it } from "bun:test"
 import type { PluginInput } from "@opencode-ai/plugin"
 import { createKiroFetch } from "../src/plugin"
 import type { KiroSession } from "../src/session"
-import { kiroResponseToAnthropic, mapKiroError } from "../src/transform"
+import { kiroResponseToAnthropic, mapKiroError } from "../src/response"
 import { chunkedResponse, encodeKiroEvent } from "./support/eventstream-fixtures"
 import { isolateEnv } from "./support/isolation"
 

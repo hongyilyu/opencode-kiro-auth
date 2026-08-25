@@ -69,14 +69,14 @@ without a variant selected send no effort field, leaving behavior unchanged.
 
 - `auth.ts` implements AWS SSO OIDC client registration, device authorization, and
   refresh using OpenCode-owned credentials.
-- `transform.ts` maps the Anthropic Messages request opencode sends into Kiro's
-  CodeWhisperer `GenerateAssistantResponse` request (text, tool calls, images), and
-  converts the AWS event-stream response back into an Anthropic SSE stream. Before any
-  output, throttling becomes HTTP 429, timeouts become HTTP 504, and a stream that ends
-  without text or a tool call becomes HTTP 502, so opencode retries instead of recording
-  a successful empty assistant turn. A terminal `CONTENT_FILTERED` event becomes a clear
-  non-retryable HTTP 400, including Kiro's refusal category and recovery guidance, because
-  retrying the same conversation cannot change the result.
+- `request.ts` maps the Anthropic Messages request opencode sends into Kiro's
+  CodeWhisperer `GenerateAssistantResponse` request (text, tool calls, images).
+- `response.ts` converts the AWS event-stream response back into an Anthropic SSE
+  stream. Before any output, throttling becomes HTTP 429, timeouts become HTTP 504, and
+  a stream that ends without text or a tool call becomes HTTP 502, so opencode retries
+  instead of recording a successful empty assistant turn. A terminal `CONTENT_FILTERED`
+  event becomes a clear non-retryable HTTP 400, including Kiro's refusal category and
+  recovery guidance, because retrying the same conversation cannot change the result.
 - `plugin.ts` registers the provider auth hooks and intercepting fetches.
 
 ## Environment variables

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test"
-import { toKiroPayload } from "../src/transform"
+import { toKiroPayload } from "../src/request"
 import { isolateEnv } from "./support/isolation"
 
 /** Parse the conversationState Kiro would receive for an Anthropic request body. */
@@ -99,6 +99,103 @@ describe("image trimming", () => {
     expect(allImgs).not.toContain("OLD")
     expect(allImgs).toContain("MID")
     expect(allImgs).toContain("NEW")
+  })
+})
+
+describe("tool-result image trimming", () => {
+  const image = (data: string) => ({
+    type: "image",
+    source: { type: "base64", media_type: "image/png", data },
+  })
+  const oldResultContent = [{ type: "text", text: "old screenshot" }, image("OLD_TOOL_IMAGE")]
+  const body = {
+    model: "claude-sonnet-4.6",
+    tools: [{ name: "screenshot", description: "d", input_schema: { type: "object" } }],
+    messages: [
+      { role: "user", content: "capture" },
+      { role: "assistant", content: [{ type: "tool_use", id: "shot", name: "screenshot", input: {} }] },
+      { role: "user", content: [{ type: "tool_result", tool_use_id: "shot", content: oldResultContent }] },
+      { role: "assistant", content: "captured" },
+      { role: "user", content: [{ type: "text", text: "new screenshot" }, image("NEW_IMAGE")] },
+    ],
+  }
+  const oldResultText = (keepImageTurns: number) => {
+    const entry = toKiroPayload(body, undefined, undefined, { keepImageTurns }).conversationState.history[2]
+    return entry && "userInputMessage" in entry
+      ? entry.userInputMessage.userInputMessageContext.toolResults?.[0]?.content[0]?.text
+      : undefined
+  }
+
+  it("omits tool-result images outside the retention window", () => {
+    const text = oldResultText(1)
+    expect(text).toBe(
+      JSON.stringify([
+        { type: "text", text: "old screenshot" },
+        { type: "text", text: "[image omitted]" },
+      ]),
+    )
+    expect(text).not.toContain("OLD_TOOL_IMAGE")
+  })
+
+  it("preserves tool-result image bytes inside the retention window", () => {
+    expect(oldResultText(2)).toBe(JSON.stringify(oldResultContent))
+  })
+
+  it("strips every tool-result image when retention is zero", () => {
+    const payload = toKiroPayload(body, undefined, undefined, { keepImageTurns: 0 })
+    expect(JSON.stringify(payload)).not.toContain("OLD_TOOL_IMAGE")
+    expect(JSON.stringify(payload)).not.toContain("NEW_IMAGE")
+  })
+})
+
+describe("request normalization", () => {
+  it("does not mutate source messages across ordered passes", () => {
+    const body = {
+      model: "claude-sonnet-4.6",
+      system: "system",
+      tools: [{ name: "bash", description: "d", input_schema: { type: "object" } }],
+      messages: [
+        { role: "assistant", content: [{ type: "tool_use", id: "tool", name: "bash", input: {} }] },
+        {
+          role: "user",
+          content: [
+            { type: "tool_result", tool_use_id: "tool", content: "result" },
+            { type: "text", text: "retry" },
+          ],
+        },
+      ],
+    }
+    const original = structuredClone(body)
+
+    toKiroPayload(body, undefined, undefined, { keepImageTurns: 0 })
+
+    expect(body).toEqual(original)
+  })
+
+  it("resolves the working directory for each request", () => {
+    let cwd = "/workspace/first"
+    const dependencies = { cwd: () => cwd }
+    const body = { model: "claude-sonnet-4.6", messages: [{ role: "user", content: "where" }] }
+    const currentDirectory = () =>
+      toKiroPayload(body, undefined, undefined, dependencies).conversationState.currentMessage.userInputMessage
+        .userInputMessageContext.envState.currentWorkingDirectory
+
+    expect(currentDirectory()).toBe("/workspace/first")
+    cwd = "/workspace/second"
+    expect(currentDirectory()).toBe("/workspace/second")
+  })
+
+  // The golden corpus injects platform, so snapshots cannot depend on the host machine.
+  it("maps the injected platform to Kiro's operating system", () => {
+    const body = { model: "claude-sonnet-4.6", messages: [{ role: "user", content: "os" }] }
+    const os = (platform: string) =>
+      toKiroPayload(body, undefined, undefined, { platform }).conversationState.currentMessage.userInputMessage
+        .userInputMessageContext.envState.operatingSystem
+
+    expect(os("darwin")).toBe("macos")
+    expect(os("win32")).toBe("windows")
+    expect(os("linux")).toBe("linux")
+    expect(os("freebsd")).toBe("linux")
   })
 })
 
@@ -236,13 +333,14 @@ describe("effort variant fields", () => {
       .additionalModelRequestFields
 
   it("claude variant -> output_config.effort", () => {
-    const claudeFields = fields("claude-fable-5", "max")
-    expect(claudeFields?.output_config?.effort).toBe("max")
-    expect(claudeFields?.thinking?.type).toBe("adaptive")
+    expect(fields("claude-fable-5", "max")).toEqual({
+      thinking: { type: "adaptive", display: "omitted" },
+      output_config: { effort: "max" },
+    })
   })
 
   it("gpt variant -> reasoning.effort", () => {
-    expect(fields("gpt-5.6-sol", "xhigh")?.reasoning?.effort).toBe("xhigh")
+    expect(fields("gpt-5.6-sol", "xhigh")).toEqual({ reasoning: { effort: "xhigh" } })
   })
 
   it("no variant -> no extra fields", () => {

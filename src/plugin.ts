@@ -13,7 +13,8 @@ import {
 } from "./auth"
 import { generateAssistantResponse, type KiroClientDependencies } from "./client"
 import { createSession, type KiroSession } from "./session"
-import { kiroResponseToAnthropic, mapKiroError, toKiroPayload } from "./transform"
+import { toKiroPayload } from "./request"
+import { anthropicErrorResponse, kiroResponseToAnthropic, mapKiroError } from "./response"
 import { resolveContextLimit } from "./limits"
 import { createTools, type KiroToolContext } from "./tools"
 import { createKiroDebugContext, kiroDebug, redactKiroSecrets } from "./debug"
@@ -189,8 +190,18 @@ export function createKiroFetch(
 ) {
   return async function kiroFetch(_input: Parameters<typeof fetch>[0], init?: RequestInit) {
     const debug = createKiroDebugContext()
-    const active = await getSession()
-    const body = typeof init?.body === "string" && init.body.length > 0 ? JSON.parse(init.body) : {}
+    let body: Record<string, any> = {}
+    if (typeof init?.body === "string" && init.body.length > 0) {
+      const parsed = parseRequestObject(init.body)
+      if (!parsed) {
+        return anthropicErrorResponse(
+          400,
+          "invalid_request_error",
+          "Invalid JSON request body: the Anthropic request must be a JSON object.",
+        )
+      }
+      body = parsed
+    }
     const model = typeof body.model === "string" ? body.model : DEFAULT_MODEL
 
     const effort = new Headers(init?.headers).get(EFFORT_HEADER) ?? undefined
@@ -205,6 +216,7 @@ export function createKiroFetch(
     })
 
     const payload = toKiroPayload(body, effort, debug)
+    const active = await getSession()
     const response = await generateAssistantResponse(payload, active, { debug, ...dependencies })
     kiroDebug(debug, "response.received", {
       status: response.status,
@@ -258,6 +270,18 @@ function mirrorProviderConfig(config: Config, sourceId: string, targetId: string
   }
 
   config.provider = { ...providers, [targetId]: mirrored } as Config["provider"]
+}
+
+/** Parse an Anthropic request body, accepting only a JSON object; anything else is undefined. */
+function parseRequestObject(text: string): Record<string, any> | undefined {
+  try {
+    const parsed: unknown = JSON.parse(text)
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+      ? (parsed as Record<string, any>)
+      : undefined
+  } catch {
+    return undefined
+  }
 }
 
 function responseDebugHeaders(headers: Headers): Record<string, string> {
