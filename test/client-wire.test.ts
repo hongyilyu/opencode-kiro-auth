@@ -3,16 +3,19 @@ import * as crypto from "node:crypto"
 import { platform } from "node:os"
 import { fetchApiKeyProfileArn } from "../src/apikey"
 import { generateAssistantResponse } from "../src/client"
+import { kiroOperatingSystem } from "../src/constants"
 import { invokeMcp } from "../src/mcp"
 import { getProfileArn } from "../src/profile"
-import type { KiroSession } from "../src/session"
 import { toKiroPayload } from "../src/request"
+import { fakeSession } from "./support/plugin-fixtures"
 
 type WireCall = {
   url: string
   method: string | undefined
   headers: Record<string, string>
   body: string | undefined
+  /** Optional so the toEqual captures below can omit it; the recorder always sets it (undefined when absent). */
+  signal?: AbortSignal | undefined
 }
 
 const ACCESS_TOKEN = "wire-access-token"
@@ -24,7 +27,7 @@ const CONTINUATION_ID = "00000000-0000-4000-8000-000000000003"
 const MCP_INVOCATION_ID = "00000000-0000-4000-8000-000000000004"
 const FIXED_TIME = new Date("2026-08-24T12:34:56.789Z")
 
-const kiroOs = platform() === "win32" ? "windows" : platform() === "darwin" ? "macos" : "linux"
+const kiroOs = kiroOperatingSystem(platform())
 const STREAMING_USER_AGENT =
   `aws-sdk-rust/1.3.15 ua/2.1 api/codewhispererstreaming/0.1.17975 os/${kiroOs} ` +
   "lang/rust/1.92.0 md/appVersion-2.18.0 app/AmazonQ-For-CLI"
@@ -45,11 +48,12 @@ function recordingFetch(
 ): { calls: WireCall[]; fetch: typeof globalThis.fetch } {
   const calls: WireCall[] = []
   const fetch = (async (input: Parameters<typeof globalThis.fetch>[0], init?: RequestInit) => {
-    const call = {
+    const call: WireCall = {
       url: input instanceof Request ? input.url : String(input),
       method: init?.method,
       headers: Object.fromEntries(new Headers(init?.headers)),
       body: typeof init?.body === "string" ? init.body : undefined,
+      signal: init?.signal ?? undefined,
     }
     calls.push(call)
     return respond(call, calls.length - 1)
@@ -71,17 +75,7 @@ function localTimestamp(date: Date): string {
   )
 }
 
-const session = {
-  async authHeaders() {
-    return { authorization: `Bearer ${ACCESS_TOKEN}` }
-  },
-  async chatProfileArn() {
-    return PROFILE_ARN
-  },
-  async mcpProfileArn() {
-    return PROFILE_ARN
-  },
-} as KiroSession
+const session = fakeSession({ token: ACCESS_TOKEN, profileArn: PROFILE_ARN })
 
 describe("Kiro request wire captures", () => {
   it("captures GenerateAssistantResponse", async () => {
@@ -90,13 +84,12 @@ describe("Kiro request wire captures", () => {
       .mockReturnValueOnce(CONVERSATION_ID)
       .mockReturnValueOnce(CONTINUATION_ID)
 
-    const debug = { id: DEBUG_ID, startedAt: FIXED_TIME.getTime() }
+    const debug = { id: DEBUG_ID, startedAt: FIXED_TIME.getTime(), enabled: false }
     const recorder = recordingFetch()
     await generateAssistantResponse(
       toKiroPayload(
         { model: "claude-sonnet-4.6", messages: [{ role: "user", content: "hello" }] },
-        undefined,
-        debug,
+        { debug },
       ),
       session,
       { debug, fetch: recorder.fetch },
@@ -144,6 +137,38 @@ describe("Kiro request wire captures", () => {
         },
       }),
     })
+  })
+
+  it("forwards the caller's AbortSignal to GenerateAssistantResponse", async () => {
+    const debug = { id: DEBUG_ID, startedAt: FIXED_TIME.getTime(), enabled: false }
+    const controller = new AbortController()
+    const recorder = recordingFetch()
+
+    await generateAssistantResponse(
+      toKiroPayload(
+        { model: "claude-sonnet-4.6", messages: [{ role: "user", content: "hello" }] },
+        { debug },
+      ),
+      session,
+      { debug, fetch: recorder.fetch, signal: controller.signal },
+    )
+
+    expect(recorder.calls).toHaveLength(1)
+    expect(recorder.calls[0]).toMatchObject({
+      url: "https://runtime.us-east-1.kiro.dev/",
+      method: "POST",
+    })
+    expect(recorder.calls[0]?.signal).toBe(controller.signal)
+  })
+
+  it("GenerateAssistantResponse accepts only a typed KiroRequestPayload", () => {
+    // Compile-time contract: the closure is never invoked; `bun run typecheck` fails if the
+    // expected error disappears (a loosely typed body would then reach the wire unchecked).
+    const debug = { id: DEBUG_ID, startedAt: FIXED_TIME.getTime(), enabled: false }
+    const sendRawObject = () =>
+      // @ts-expect-error a raw object is not a KiroRequestPayload
+      generateAssistantResponse({ conversationState: {} } as Record<string, unknown>, session, { debug })
+    expect(typeof sendRawObject).toBe("function")
   })
 
   it("captures InvokeMCP", async () => {

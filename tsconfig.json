@@ -19,7 +19,7 @@
     // Bun runtime globals + the bun:test module.
     "types": ["bun"]
   },
-  // script/ is deliberately excluded: the remaining scripts there are manual, live-credential
-  // tools (check-auth, test-model, ...) and are out of scope for the CI gate.
-  "include": ["index.ts", "src/**/*", "test/**/*"]
+  // script/ is typechecked but never executed by CI: those are manual, live-credential tools
+  // (check-auth, test-model, ...) that spawn opencode against a real account.
+  "include": ["index.ts", "src/**/*", "test/**/*", "script/**/*"]
 }

@@ -1,5 +1,5 @@
 import { Buffer } from "node:buffer"
-import { EXPIRY_SKEW_MS } from "./constants"
+import { EXPIRY_SKEW_MS, REFRESH_STATE_PREFIX } from "./constants"
 import { redactKiroSecrets } from "./debug"
 
 const BUILDER_ID_START_URL = "https://view.awsapps.com/start"
@@ -13,7 +13,6 @@ const KIRO_SCOPES = [
 
 const CLIENT_NAME = "opencode-kiro-auth"
 const DEVICE_CODE_GRANT = "urn:ietf:params:oauth:grant-type:device_code"
-const REFRESH_STATE_PREFIX = "kiro-oauth-v1:"
 const DEFAULT_DEVICE_EXPIRES_SECONDS = 600
 const DEFAULT_POLL_INTERVAL_SECONDS = 5
 
@@ -26,7 +25,7 @@ export type OAuthCredential = {
   expires: number
 }
 
-type RefreshState = {
+export type RefreshState = {
   version: 1
   refreshToken: string
   clientId: string
@@ -220,7 +219,7 @@ export async function beginDeviceAuthorization(
   }
 }
 
-function encodeRefreshState(state: RefreshState): string {
+export function encodeRefreshState(state: RefreshState): string {
   return REFRESH_STATE_PREFIX + Buffer.from(JSON.stringify(state), "utf8").toString("base64url")
 }
 
@@ -340,7 +339,7 @@ export async function completeDeviceAuthorization(
   throw new KiroAuthError("Kiro device authorization timed out. Run `opencode auth login --provider kiro` again.")
 }
 
-export function requireOAuthCredential(value: unknown): OAuthCredential {
+function requireOAuthCredential(value: unknown): OAuthCredential {
   if (!value || typeof value !== "object") {
     throw new KiroAuthError("Kiro is not signed in. Run `opencode auth login --provider kiro`.")
   }
@@ -398,8 +397,24 @@ export async function refreshOAuthCredential(
 type CredentialReader = () => Promise<unknown>
 type CredentialWriter = (credential: OAuthCredential) => Promise<void>
 
+/** A refreshed credential newer than the store, tagged with the stored `refresh` string it replaces. */
+type HeldCredential = {
+  credential: OAuthCredential
+  replaces: string
+  persisted: boolean
+}
+
+/**
+ * Serves a usable access token, refreshing through AWS SSO OIDC when the stored credential is
+ * stale. The store (opencode's auth file) stays authoritative: a removed or invalid credential
+ * still throws. A refreshed credential is held in memory from the moment OIDC returns it, so a
+ * failed persist never loses the rotated refresh token and never causes a second refresh with a
+ * superseded one; the write is retried on the next call. All refresh and persist work runs
+ * through one single-flight slot.
+ */
 export class KiroCredentialManager {
-  private refreshInFlight: Promise<OAuthCredential> | undefined
+  private settling: Promise<OAuthCredential> | undefined
+  private held: HeldCredential | undefined
 
   constructor(
     private readonly read: CredentialReader,
@@ -408,24 +423,55 @@ export class KiroCredentialManager {
   ) {}
 
   async getAccessToken(): Promise<string> {
-    const credential = requireOAuthCredential(await this.read())
-    if (
-      credential.access.length > 0 &&
-      credential.expires > nowOf(this.dependencies) + EXPIRY_SKEW_MS
-    ) {
-      return credential.access
-    }
+    const stored = requireOAuthCredential(await this.read())
+    const current = this.syncHeldWith(stored)
+    const persistPending = this.held !== undefined && !this.held.persisted
+    if (this.isFresh(current) && !persistPending) return current.access
+    return (await this.settle(() => this.freshen(current, stored.refresh))).access
+  }
 
-    if (!this.refreshInFlight) {
-      this.refreshInFlight = refreshOAuthCredential(credential, this.dependencies)
-        .then(async (next) => {
-          await this.write(next)
-          return next
-        })
-        .finally(() => {
-          this.refreshInFlight = undefined
-        })
+  /**
+   * Reconcile memory with the store and return the credential to serve. The store wins unless
+   * the held credential supersedes exactly what the store still holds; a store that moved under
+   * us (our write landed, or another writer / re-login replaced it) drops the held credential.
+   */
+  private syncHeldWith(stored: OAuthCredential): OAuthCredential {
+    if (!this.held) return stored
+    if (stored.refresh === this.held.replaces) return this.held.credential
+    this.held = undefined
+    return stored
+  }
+
+  private isFresh(credential: OAuthCredential): boolean {
+    return credential.access.length > 0 && credential.expires > nowOf(this.dependencies) + EXPIRY_SKEW_MS
+  }
+
+  /** Single-flight: concurrent callers share the leader's work and its outcome. */
+  private settle(work: () => Promise<OAuthCredential>): Promise<OAuthCredential> {
+    return (this.settling ??= work().finally(() => {
+      this.settling = undefined
+    }))
+  }
+
+  /**
+   * The slot's one unit of work, run by the leader only (joiners await its outcome). Entered when
+   * the credential is stale or an earlier refresh is still unpersisted: refresh if stale, then
+   * persist whatever is held; end fresh-and-persisted or throw. `held` is assigned before the
+   * write, so a failed persist keeps the rotated credential for the next call. The new credential
+   * replaces what the store held when this call read it: syncHeldWith guarantees any earlier held
+   * credential already pointed at that same stored value.
+   */
+  private async freshen(current: OAuthCredential, storedRefresh: string): Promise<OAuthCredential> {
+    if (!this.isFresh(current)) {
+      const next = await refreshOAuthCredential(current, this.dependencies)
+      this.held = { credential: next, replaces: storedRefresh, persisted: false }
     }
-    return (await this.refreshInFlight).access
+    const held = this.held
+    if (!held) throw new Error("unreachable: freshen runs only with a stale or unpersisted credential")
+    if (!held.persisted) {
+      await this.write(held.credential)
+      held.persisted = true
+    }
+    return held.credential
   }
 }

@@ -1,165 +1,18 @@
 import { describe, expect, it } from "bun:test"
-import type { PluginInput } from "@opencode-ai/plugin"
-import { createKiroFetch } from "../src/plugin"
-import type { KiroSession } from "../src/session"
-import { kiroResponseToAnthropic, mapKiroError } from "../src/response"
-import { chunkedResponse, encodeKiroEvent } from "./support/eventstream-fixtures"
+import { chunkedResponse, encodeKiroEvent, encodeKiroFrame, str } from "./support/eventstream-fixtures"
 import { isolateEnv } from "./support/isolation"
-
-/** Convert a synthetic Kiro event stream built from the given frames. */
-function preflight(...frames: Uint8Array[]): Promise<Response> {
-  return kiroResponseToAnthropic(chunkedResponse(...frames), {
-    model: "claude-sonnet-4.6",
-    contextLimit: 1_000_000,
-  })
-}
-
-/** Convert synthetic Kiro frames to the Anthropic SSE text a client would receive. */
-async function streamedSse(model: string, ...frames: Uint8Array[]): Promise<string> {
-  const response = await kiroResponseToAnthropic(chunkedResponse(...frames), {
-    model,
-    contextLimit: 1_000_000,
-  })
-  return response.text()
-}
-
-async function errorBody(res: Response): Promise<{ error?: { type?: string; message?: string } }> {
-  return (await res.json()) as { error?: { type?: string; message?: string } }
-}
-
-type ParsedSseFrame = { event: string; data: Record<string, any> }
-
-function parseSse(value: string): ParsedSseFrame[] {
-  return value
-    .split("\n\n")
-    .filter(Boolean)
-    .map((block) => {
-      const lines = block.split("\n")
-      return {
-        event: lines.find((line) => line.startsWith("event: "))?.slice(7) ?? "",
-        data: JSON.parse(lines.find((line) => line.startsWith("data: "))?.slice(6) ?? "{}"),
-      }
-    })
-}
-
-function expectEventStream(response: Response): void {
-  expect(response.status).toBe(200)
-  expect(response.headers.get("content-type")).toBe("text/event-stream")
-}
-
-function expectTerminalError(frames: ParsedSseFrame[]): void {
-  expect(frames.filter((frame) => frame.event === "error")).toHaveLength(1)
-  expect(frames.some((frame) => frame.data.type === "message_stop")).toBe(false)
-}
-
-type ReaderStep = Uint8Array | Error | "wait" | "wait-error" | "eof"
-
-function steppedResponse(...initialSteps: ReaderStep[]) {
-  const steps = [...initialSteps]
-  let reads = 0
-  let cancels = 0
-  let releases = 0
-  let cancelReason: unknown
-  let finishPendingRead: (() => void) | undefined
-  let failPendingRead: (() => void) | undefined
-  let cancelWait: Promise<void> | undefined
-  let resolveReleased!: () => void
-  const released = new Promise<void>((resolve) => {
-    resolveReleased = resolve
-  })
-
-  const reader = {
-    async read(): Promise<{ done: boolean; value?: Uint8Array }> {
-      reads += 1
-      const step = steps.shift() ?? "eof"
-      if (step instanceof Error) throw step
-      if (step === "wait" || step === "wait-error") {
-        return new Promise((resolve, reject) => {
-          finishPendingRead = () => resolve({ done: true })
-          if (step === "wait-error") failPendingRead = () => reject(new Error("read aborted"))
-        })
-      }
-      if (step === "eof") return { done: true }
-      return { done: false, value: step }
-    },
-    async cancel(reason?: unknown): Promise<void> {
-      cancels += 1
-      cancelReason = reason
-      if (failPendingRead) failPendingRead()
-      else finishPendingRead?.()
-      finishPendingRead = undefined
-      failPendingRead = undefined
-      await cancelWait
-    },
-    releaseLock(): void {
-      releases += 1
-      resolveReleased()
-    },
-  }
-
-  return {
-    response: {
-      status: 200,
-      headers: new Headers({ "content-type": "application/vnd.amazon.eventstream" }),
-      body: { getReader: () => reader },
-    } as unknown as Response,
-    stats: () => ({ reads, cancels, releases, cancelReason, remainingSteps: steps.length }),
-    released,
-    holdCancellation: () => {
-      cancelWait = new Promise(() => {})
-    },
-  }
-}
-
-async function fullPipeline(...chunks: Uint8Array[]): Promise<Response> {
-  const session: KiroSession = {
-    async authHeaders() {
-      return { authorization: "Bearer test-token" }
-    },
-    async chatProfileArn() {
-      return "arn:aws:codewhisperer:us-east-1:111122223333:profile/STREAMTEST"
-    },
-    async mcpProfileArn() {
-      return "arn:aws:codewhisperer:us-east-1:111122223333:profile/STREAMTEST"
-    },
-  }
-  const fetcher = (async () => chunkedResponse(...chunks)) as unknown as typeof globalThis.fetch
-  const input = {
-    client: {
-      config: {
-        providers: async () => ({
-          data: {
-            providers: [
-              {
-                id: "kiro",
-                models: { "claude-fable-5": { limit: { context: 200_000 } } },
-              },
-            ],
-          },
-        }),
-      },
-    },
-  } as unknown as PluginInput
-  const kiroFetch = createKiroFetch("kiro", "oauth", input, async () => session, { fetch: fetcher })
-  return kiroFetch("https://api.anthropic.com/v1/messages", {
-    method: "POST",
-    body: JSON.stringify({
-      model: "claude-fable-5",
-      messages: [{ role: "user", content: "run a command" }],
-      tools: [
-        {
-          name: "bash",
-          description: "Run a shell command",
-          input_schema: {
-            type: "object",
-            properties: { command: { type: "string" } },
-            required: ["command"],
-          },
-        },
-      ],
-    }),
-  })
-}
+import { fullPipeline } from "./support/plugin-fixtures"
+import {
+  convert,
+  errorBody,
+  expectEventStream,
+  expectTerminalError,
+  parseSse,
+  preflight,
+  readUntil,
+  steppedResponse,
+  streamedSse,
+} from "./support/response-fixtures"
 
 // Usage is derived from Kiro's contextUsageEvent percentage.
 describe("usage reporting", () => {
@@ -194,10 +47,7 @@ describe("in-band throttling", () => {
       ":exception-type",
     )
     // Split mid-frame to exercise partial-frame buffering in the preflight reader.
-    const mapped = await kiroResponseToAnthropic(
-      chunkedResponse(throttledFrame.subarray(0, 9), throttledFrame.subarray(9)),
-      { model: "claude-sonnet-4.6", contextLimit: 1_000_000 },
-    )
+    const mapped = await convert(chunkedResponse(throttledFrame.subarray(0, 9), throttledFrame.subarray(9)))
     expect(mapped.status).toBe(429)
     expect(mapped.headers.get("retry-after")).toBe("3")
     const body = await errorBody(mapped)
@@ -216,6 +66,23 @@ describe("in-band throttling", () => {
     expect(res.status).toBe(429)
     expect(res.headers.get("retry-after")).toBe("10")
   })
+
+  // AWS spec-level error frames carry the code in headers with no body at all.
+  it("a ThrottlingException :error-code frame maps to 429", async () => {
+    delete process.env.KIRO_RATE_LIMIT_RETRY_SECONDS
+    const res = await preflight(
+      encodeKiroFrame([
+        str(":message-type", "error"),
+        str(":error-code", "ThrottlingException"),
+        str(":error-message", "Rate exceeded"),
+      ]),
+    )
+    expect(res.status).toBe(429)
+    expect(res.headers.get("retry-after")).toBeNull()
+    const body = await errorBody(res)
+    expect(body.error?.type).toBe("rate_limit_error")
+    expect(body.error?.message).toBe("Rate exceeded")
+  })
 })
 
 // Pre-output timeout -> retryable HTTP error, never a successful empty turn.
@@ -229,7 +96,7 @@ describe("pre-output timeouts", () => {
   })
 
   it("transport timeout mapping", async () => {
-    const res = await kiroResponseToAnthropic(
+    const res = await convert(
       new Response(
         new ReadableStream<Uint8Array>({
           start(controller) {
@@ -237,10 +104,30 @@ describe("pre-output timeouts", () => {
           },
         }),
       ),
-      { model: "claude-sonnet-4.6", contextLimit: 1_000_000 },
     )
     expect(res.status).toBe(504)
     expect(await res.text()).toContain("TimeoutError: The operation timed out.")
+  })
+
+  it("a body TimeoutError without a signal still maps to 504", async () => {
+    const upstream = steppedResponse([new DOMException("The operation timed out.", "TimeoutError")])
+    const res = await convert(upstream.response)
+
+    expect(res.status).toBe(504)
+    expect((await errorBody(res)).error?.type).toBe("api_error")
+    expect(upstream.stats()).toMatchObject({ reads: 1, releases: 1 })
+  })
+
+  it("a body TimeoutError with a live signal is still a 504, not a rejection", async () => {
+    const controller = new AbortController()
+    const upstream = steppedResponse(
+      [new DOMException("The operation timed out.", "TimeoutError")],
+      { signal: controller.signal },
+    )
+    const res = await convert(upstream.response, { signal: controller.signal })
+
+    expect(res.status).toBe(504)
+    expect(await res.text()).toContain("timed out")
   })
 })
 
@@ -259,10 +146,7 @@ describe("empty streams", () => {
   })
 
   it("bodyless response mapping", async () => {
-    const res = await kiroResponseToAnthropic(new Response(null), {
-      model: "claude-sonnet-4.6",
-      contextLimit: 1_000_000,
-    })
+    const res = await convert(new Response(null))
     expect(res.status).toBe(502)
     expect(await res.text()).toContain("without an event stream")
   })
@@ -468,18 +352,32 @@ describe("merged response driver", () => {
     expect(frames.some((frame) => frame.data.delta?.text === "after")).toBe(false)
   })
 
+  it("passes a pre-output :message-type error frame through as a stream error", async () => {
+    const response = await preflight(
+      encodeKiroFrame([
+        str(":message-type", "error"),
+        str(":error-code", "InternalServerException"),
+        str(":error-message", "provider failed"),
+      ]),
+      encodeKiroEvent("assistantResponseEvent", { content: "after" }),
+    )
+    const frames = parseSse(await response.text())
+
+    expectEventStream(response)
+    expectTerminalError(frames)
+    expect(frames.find((frame) => frame.event === "error")?.data.error.message).toBe("provider failed")
+    expect(frames.some((frame) => frame.data.delta?.text === "after")).toBe(false)
+  })
+
   it("cancels upstream after a terminal stream event without another read", async () => {
-    const upstream = steppedResponse(
+    const upstream = steppedResponse([
       encodeKiroEvent("assistantResponseEvent", { content: "before" }),
       encodeKiroEvent("InternalServerException", { message: "provider failed" }, ":exception-type"),
       encodeKiroEvent("assistantResponseEvent", { content: "after" }),
       "eof",
-    )
+    ])
     upstream.holdCancellation()
-    const response = await kiroResponseToAnthropic(upstream.response, {
-      model: "claude-sonnet-4.6",
-      contextLimit: 1_000_000,
-    })
+    const response = await convert(upstream.response)
     const frames = parseSse(await response.text())
 
     expectTerminalError(frames)
@@ -493,14 +391,11 @@ describe("merged response driver", () => {
   })
 
   it("closes an open text block before a transport error", async () => {
-    const upstream = steppedResponse(
+    const upstream = steppedResponse([
       encodeKiroEvent("assistantResponseEvent", { content: "before" }),
       new Error("socket reset"),
-    )
-    const response = await kiroResponseToAnthropic(upstream.response, {
-      model: "claude-sonnet-4.6",
-      contextLimit: 1_000_000,
-    })
+    ])
+    const response = await convert(upstream.response)
     const frames = parseSse(await response.text())
 
     expect(frames.map((frame) => frame.event)).toEqual([
@@ -519,11 +414,8 @@ describe("merged response driver", () => {
       encodeKiroEvent("toolUseEvent", { toolUseId: "pending", name: "bash" }),
       encodeKiroEvent("toolUseEvent", { toolUseId: "pending", input: '{"command":"ls"' }),
     ])
-    const upstream = steppedResponse(pendingTool, new Error("tool stream broke"))
-    const response = await kiroResponseToAnthropic(upstream.response, {
-      model: "claude-sonnet-4.6",
-      contextLimit: 1_000_000,
-    })
+    const upstream = steppedResponse([pendingTool, new Error("tool stream broke")])
+    const response = await convert(upstream.response)
     const frames = parseSse(await response.text())
 
     expect(frames.filter((frame) => frame.data.content_block?.type === "tool_use")).toHaveLength(0)
@@ -532,7 +424,7 @@ describe("merged response driver", () => {
   })
 
   it("keeps the common transport error frame byte-identical", async () => {
-    const upstream = steppedResponse(
+    const upstream = steppedResponse([
       encodeKiroEvent("toolUseEvent", {
         toolUseId: "complete",
         name: "bash",
@@ -540,11 +432,8 @@ describe("merged response driver", () => {
         stop: true,
       }),
       new Error("socket reset"),
-    )
-    const response = await kiroResponseToAnthropic(upstream.response, {
-      model: "claude-sonnet-4.6",
-      contextLimit: 1_000_000,
-    })
+    ])
+    const response = await convert(upstream.response)
     const sse = await response.text()
     const frames = parseSse(sse)
     const expectedError =
@@ -555,23 +444,15 @@ describe("merged response driver", () => {
   })
 
   it("propagates consumer cancellation without manufacturing an error", async () => {
-    const upstream = steppedResponse(
+    const upstream = steppedResponse([
       encodeKiroEvent("assistantResponseEvent", { content: "before" }),
       "wait-error",
-    )
-    const response = await kiroResponseToAnthropic(upstream.response, {
-      model: "claude-sonnet-4.6",
-      contextLimit: 1_000_000,
-    })
+    ])
+    const response = await convert(upstream.response)
     const reader = response.body!.getReader()
-    const received: Uint8Array[] = []
-    for (let index = 0; index < 3; index++) {
-      const next = await reader.read()
-      expect(next.done).toBe(false)
-      received.push(next.value)
-    }
+    const sse = await readUntil(reader, '"text":"before"')
 
-    expect(new TextDecoder().decode(Buffer.concat(received))).not.toContain("event: error")
+    expect(sse).not.toContain("event: error")
     await reader.cancel("consumer stopped")
     await upstream.released
     expect((await reader.read()).done).toBe(true)
@@ -680,20 +561,35 @@ describe("injected full response pipeline", () => {
     expect(frames.some((frame) => frame.data.type === "message_delta")).toBe(false)
     expect(frames.some((frame) => frame.data.type === "message_stop")).toBe(false)
   })
-})
 
-// HTTP error mapping -> context overflow phrase opencode recognizes.
-describe("mapKiroError", () => {
-  it("overflow mapping", () => {
-    const mapped = mapKiroError(
-      JSON.stringify({ reason: "CONTENT_LENGTH_EXCEEDS_THRESHOLD", message: "Input content length exceeds threshold." }),
-      400,
+  it("completes a post-output content filter as a refusal stop", async () => {
+    const response = await fullPipeline(
+      encodeKiroEvent("assistantResponseEvent", { content: "I can help with" }),
+      encodeKiroEvent("metadataEvent", {
+        stopReason: "CONTENT_FILTERED",
+        stopDetails: {
+          refusal: {
+            category: "REASONING_EXTRACTION",
+            explanation: "Select a different model or start a new conversation.",
+          },
+        },
+      }),
+      encodeKiroEvent("contextUsageEvent", { contextUsagePercentage: 5 }),
     )
-    expect(mapped.status).toBe(400)
-    expect(mapped.body.toLowerCase()).toContain("prompt is too long")
-  })
+    const frames = parseSse(await response.text())
 
-  it("passthrough", () => {
-    expect(mapKiroError("boom", 500).body).toBe("boom")
+    expect(response.status).toBe(200)
+    expect(frames.some((frame) => frame.event === "error")).toBe(false)
+    const messageDelta = frames.find((frame) => frame.data.type === "message_delta")
+    expect(messageDelta?.data.delta).toEqual({
+      stop_reason: "refusal",
+      stop_sequence: null,
+      stop_details: {
+        type: "refusal",
+        category: "REASONING_EXTRACTION",
+        explanation: "Select a different model or start a new conversation.",
+      },
+    })
+    expect(frames.at(-1)?.data.type).toBe("message_stop")
   })
 })

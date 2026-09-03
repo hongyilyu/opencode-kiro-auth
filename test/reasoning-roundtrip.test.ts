@@ -48,8 +48,6 @@ function replayThinking(block: RecordedThinking): { text: string; signature: str
         { role: "user", content: "continue" },
       ],
     },
-    undefined,
-    undefined,
     {
       now: () => new Date(0),
       uuid: () => "roundtrip-id",

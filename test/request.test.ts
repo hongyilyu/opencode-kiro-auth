@@ -100,6 +100,30 @@ describe("image trimming", () => {
     expect(allImgs).toContain("MID")
     expect(allImgs).toContain("NEW")
   })
+
+  const singleImageKept = () => {
+    const img = { type: "image", source: { type: "base64", media_type: "image/png", data: "ONLY" } }
+    const payload = kiroPayload({ model: "claude-sonnet-4.6", messages: [{ role: "user", content: [img] }] })
+    return Boolean(payload.conversationState.currentMessage.userInputMessage.images)
+  }
+
+  it("treats a blank KIRO_KEEP_IMAGE_TURNS as unset", () => {
+    for (const value of ["", "  ", "\t"]) {
+      process.env.KIRO_KEEP_IMAGE_TURNS = value
+      expect(singleImageKept()).toBe(true)
+    }
+  })
+
+  it("honours an explicit zero, floors decimals, and falls back on garbage", () => {
+    process.env.KIRO_KEEP_IMAGE_TURNS = "0"
+    expect(singleImageKept()).toBe(false)
+    process.env.KIRO_KEEP_IMAGE_TURNS = "0.9"
+    expect(singleImageKept()).toBe(false)
+    for (const value of ["abc", "-1", "Infinity"]) {
+      process.env.KIRO_KEEP_IMAGE_TURNS = value
+      expect(singleImageKept()).toBe(true)
+    }
+  })
 })
 
 describe("tool-result image trimming", () => {
@@ -107,44 +131,99 @@ describe("tool-result image trimming", () => {
     type: "image",
     source: { type: "base64", media_type: "image/png", data },
   })
-  const oldResultContent = [{ type: "text", text: "old screenshot" }, image("OLD_TOOL_IMAGE")]
+  const oldResultContent = [{ type: "text", text: "old screenshot" }, image("OLD_TOOL_IMAGE"), image("SECOND_TOOL_IMAGE")]
   const body = {
     model: "claude-sonnet-4.6",
     tools: [{ name: "screenshot", description: "d", input_schema: { type: "object" } }],
     messages: [
       { role: "user", content: "capture" },
       { role: "assistant", content: [{ type: "tool_use", id: "shot", name: "screenshot", input: {} }] },
-      { role: "user", content: [{ type: "tool_result", tool_use_id: "shot", content: oldResultContent }] },
+      {
+        role: "user",
+        content: [image("TOP_LEVEL_IMAGE"), { type: "tool_result", tool_use_id: "shot", content: oldResultContent }],
+      },
       { role: "assistant", content: "captured" },
       { role: "user", content: [{ type: "text", text: "new screenshot" }, image("NEW_IMAGE")] },
     ],
   }
-  const oldResultText = (keepImageTurns: number) => {
-    const entry = toKiroPayload(body, undefined, undefined, { keepImageTurns }).conversationState.history[2]
-    return entry && "userInputMessage" in entry
-      ? entry.userInputMessage.userInputMessageContext.toolResults?.[0]?.content[0]?.text
-      : undefined
+  const oldResultEntry = (keepImageTurns: number) => {
+    const entry = toKiroPayload(body, { keepImageTurns }).conversationState.history[2]
+    if (!entry || !("userInputMessage" in entry)) throw new Error("expected the tool-result turn")
+    return {
+      texts: entry.userInputMessage.userInputMessageContext.toolResults?.[0]?.content.map((part) => part.text),
+      images: entry.userInputMessage.images?.map((image) => image.source.bytes),
+    }
   }
 
-  it("omits tool-result images outside the retention window", () => {
-    const text = oldResultText(1)
-    expect(text).toBe(
-      JSON.stringify([
-        { type: "text", text: "old screenshot" },
-        { type: "text", text: "[image omitted]" },
-      ]),
-    )
-    expect(text).not.toContain("OLD_TOOL_IMAGE")
+  it("omits tool-result images outside the retention window as plain marker text", () => {
+    const { texts, images } = oldResultEntry(1)
+    expect(texts).toEqual(["old screenshot", "[image omitted]", "[image omitted]"])
+    expect(images).toBeUndefined()
+    expect(JSON.stringify(oldResultEntry(1))).not.toContain("OLD_TOOL_IMAGE")
   })
 
-  it("preserves tool-result image bytes inside the retention window", () => {
-    expect(oldResultText(2)).toBe(JSON.stringify(oldResultContent))
+  // Kiro's tool-result content is text only, so kept images ride the entry's image slot with a
+  // numbered marker that continues after the turn's top-level images.
+  it("hoists tool-result images inside the retention window into the entry's images", () => {
+    const { texts, images } = oldResultEntry(2)
+    expect(texts).toEqual(["old screenshot", "[image 2 attached]", "[image 3 attached]"])
+    expect(images).toEqual(["TOP_LEVEL_IMAGE", "OLD_TOOL_IMAGE", "SECOND_TOOL_IMAGE"])
+  })
+
+  it("marks a dropped top-level image beside text instead of dropping it silently", () => {
+    const body = {
+      model: "claude-sonnet-4.6",
+      messages: [
+        { role: "user", content: [{ type: "text", text: "old" }, image("OLD_TOP_IMAGE")] },
+        { role: "assistant", content: "seen" },
+        { role: "user", content: [{ type: "text", text: "new" }, image("NEW_TOP_IMAGE")] },
+      ],
+    }
+    const state = toKiroPayload(body, { keepImageTurns: 1 }).conversationState
+    const dropped = state.history[0]
+    if (!dropped || !("userInputMessage" in dropped)) throw new Error("expected the dropped user turn")
+    expect(dropped.userInputMessage.content).toBe("old\n[image omitted]")
+    expect(dropped.userInputMessage.images).toBeUndefined()
+    expect(state.currentMessage.userInputMessage.images?.map((entry) => entry.source.bytes)).toEqual(["NEW_TOP_IMAGE"])
   })
 
   it("strips every tool-result image when retention is zero", () => {
-    const payload = toKiroPayload(body, undefined, undefined, { keepImageTurns: 0 })
+    const payload = toKiroPayload(body, { keepImageTurns: 0 })
     expect(JSON.stringify(payload)).not.toContain("OLD_TOOL_IMAGE")
     expect(JSON.stringify(payload)).not.toContain("NEW_IMAGE")
+  })
+})
+
+describe("tool-result content encoding", () => {
+  const tools = [{ name: "ls", description: "d", input_schema: { type: "object" } }]
+  const resultEntry = (content: unknown, extra: Record<string, unknown> = {}) => {
+    const state = toKiroPayload({
+      model: "claude-sonnet-4.6",
+      tools,
+      messages: [
+        { role: "user", content: "go" },
+        { role: "assistant", content: [{ type: "tool_use", id: "t", name: "ls", input: {} }] },
+        { role: "user", content: [{ type: "tool_result", tool_use_id: "t", content, ...extra }] },
+      ],
+    }).conversationState
+    return state.currentMessage.userInputMessage.userInputMessageContext.toolResults?.[0]
+  }
+
+  it("emits one text entry per text block instead of JSON scaffolding", () => {
+    expect(resultEntry([{ type: "text", text: "a.ts" }, { type: "text", text: "b.ts" }])?.content).toEqual([
+      { text: "a.ts" },
+      { text: "b.ts" },
+    ])
+  })
+
+  it("never emits an empty content list", () => {
+    expect(resultEntry(undefined)?.content).toEqual([{ text: "" }])
+    expect(resultEntry([])?.content).toEqual([{ text: "" }])
+  })
+
+  it("marks an is_error result as status error", () => {
+    expect(resultEntry("boom", { is_error: true })?.status).toBe("error")
+    expect(resultEntry("ok")?.status).toBe("success")
   })
 })
 
@@ -167,7 +246,7 @@ describe("request normalization", () => {
     }
     const original = structuredClone(body)
 
-    toKiroPayload(body, undefined, undefined, { keepImageTurns: 0 })
+    toKiroPayload(body, { keepImageTurns: 0 })
 
     expect(body).toEqual(original)
   })
@@ -177,7 +256,7 @@ describe("request normalization", () => {
     const dependencies = { cwd: () => cwd }
     const body = { model: "claude-sonnet-4.6", messages: [{ role: "user", content: "where" }] }
     const currentDirectory = () =>
-      toKiroPayload(body, undefined, undefined, dependencies).conversationState.currentMessage.userInputMessage
+      toKiroPayload(body, dependencies).conversationState.currentMessage.userInputMessage
         .userInputMessageContext.envState.currentWorkingDirectory
 
     expect(currentDirectory()).toBe("/workspace/first")
@@ -189,7 +268,7 @@ describe("request normalization", () => {
   it("maps the injected platform to Kiro's operating system", () => {
     const body = { model: "claude-sonnet-4.6", messages: [{ role: "user", content: "os" }] }
     const os = (platform: string) =>
-      toKiroPayload(body, undefined, undefined, { platform }).conversationState.currentMessage.userInputMessage
+      toKiroPayload(body, { platform }).conversationState.currentMessage.userInputMessage
         .userInputMessageContext.envState.operatingSystem
 
     expect(os("darwin")).toBe("macos")
@@ -329,7 +408,7 @@ describe("reasoning replay", () => {
 // Variant -> additionalModelRequestFields mapping (Claude vs GPT vs none).
 describe("effort variant fields", () => {
   const fields = (model: string, effort?: string) =>
-    toKiroPayload({ model, messages: [{ role: "user", content: "hi" }] }, effort)
+    toKiroPayload({ model, messages: [{ role: "user", content: "hi" }] }, { effort })
       .additionalModelRequestFields
 
   it("claude variant -> output_config.effort", () => {

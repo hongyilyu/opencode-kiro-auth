@@ -10,6 +10,19 @@ export const DEFAULT_MODEL = "claude-sonnet-4.6"
 /** Refresh the access token this long before it expires. */
 export const EXPIRY_SKEW_MS = 5 * 60 * 1000
 
+/**
+ * Prefix of the packed OAuth refresh state stored in opencode's `refresh` credential field.
+ * Lives here (not in auth.ts) so debug.ts can redact the blob without an import cycle.
+ */
+export const REFRESH_STATE_PREFIX = "kiro-oauth-v1:"
+
+export type KiroOperatingSystem = "windows" | "macos" | "linux"
+
+/** kiro-cli's operating-system vocabulary for a Node `process.platform` value. */
+export function kiroOperatingSystem(platform: string): KiroOperatingSystem {
+  return platform === "win32" ? "windows" : platform === "darwin" ? "macos" : "linux"
+}
+
 /** Kiro CodeWhisperer endpoints + awsJson1.0 wire facts (verified against kiro-cli). */
 export const KIRO_ENDPOINT = "https://runtime.us-east-1.kiro.dev/"
 /** Endpoint kiro-cli uses for the InvokeMCP operation (built-in web_search). */
@@ -37,7 +50,7 @@ export const KIRO_PROFILE_ARN_PLACEHOLDER = "arn:aws:codewhisperer:us-east-1:638
 /** User-Agent matching kiro-cli. Bump KIRO_CLI_VERSION to match `kiro-cli --version`. */
 const KIRO_CLI_VERSION = "2.18.0"
 const KIRO_SDK_API_VERSION = "0.1.17975"
-const KIRO_OS = platform() === "win32" ? "windows" : platform() === "darwin" ? "macos" : "linux"
+const KIRO_OS = kiroOperatingSystem(platform())
 const ua = (api: string, metric: string) =>
   `aws-sdk-rust/1.3.15 ua/2.1 api/${api}/${KIRO_SDK_API_VERSION} os/${KIRO_OS} lang/rust/1.92.0 ${metric} app/AmazonQ-For-CLI`
 export const KIRO_USER_AGENT = ua("codewhispererstreaming", `md/appVersion-${KIRO_CLI_VERSION}`)

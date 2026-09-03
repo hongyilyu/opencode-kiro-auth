@@ -3,9 +3,11 @@ import {
   KTR_MARKER,
   beginsAssistantOutput,
   completesAssistantTurn,
+  isContentFilteredStop,
   parseKiroEvent,
   resolveRetryAfter,
   type KiroStreamEvent,
+  type MetadataEvent,
 } from "../src/events"
 import type { KiroEvent } from "../src/eventstream"
 import { isolateEnv } from "./support/isolation"
@@ -175,6 +177,19 @@ describe("parseKiroEvent", () => {
     }
   })
 
+  it("classifies a decoder-shaped error event by its errorCode", () => {
+    expect(
+      parseKiroEvent(
+        wireEvent("error", { errorCode: "ThrottlingException", message: "Rate exceeded" }),
+      ),
+    ).toEqual({ kind: "rateLimit", message: "Rate exceeded" })
+    expect(
+      parseKiroEvent(
+        wireEvent("error", { errorCode: "InternalServerException", message: "Upstream failed" }),
+      ),
+    ).toEqual({ kind: "streamError", message: "Upstream failed" })
+  })
+
   it("extracts numeric retry-after forms from rate-limit events", () => {
     expect(
       parseKiroEvent(
@@ -243,6 +258,34 @@ describe("output predicates", () => {
     expect(completesAssistantTurn(reasoningText)).toBe(false)
     expect(completesAssistantTurn(ktrSignature)).toBe(false)
     expect(completesAssistantTurn(plainSignature)).toBe(false)
+  })
+})
+
+describe("isContentFilteredStop", () => {
+  const metadata = (stopReason?: string): MetadataEvent => ({
+    kind: "metadata",
+    ...(stopReason !== undefined ? { stopReason } : {}),
+  })
+
+  it("matches CONTENT_FILTERED regardless of case", () => {
+    for (const spelling of ["CONTENT_FILTERED", "content_filtered", "Content_Filtered"]) {
+      expect(isContentFilteredStop(metadata(spelling))).toBe(true)
+    }
+    expect(
+      isContentFilteredStop({
+        kind: "metadata",
+        stopReason: "CONTENT_FILTERED",
+        refusal: { category: "POLICY" },
+      }),
+    ).toBe(true)
+  })
+
+  it("is false for other stop reasons and for missing metadata", () => {
+    for (const stopReason of ["END_TURN", "TOOL_USE", "MAX_TOKENS", "", "CONTENT_FILTERED_X"]) {
+      expect(isContentFilteredStop(metadata(stopReason))).toBe(false)
+    }
+    expect(isContentFilteredStop(metadata())).toBe(false)
+    expect(isContentFilteredStop(undefined)).toBe(false)
   })
 })
 

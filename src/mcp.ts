@@ -1,4 +1,4 @@
-import { invokeMcpRequest, type KiroClientDependencies } from "./client"
+import { invokeMcpRequest, type JsonRpcRequest, type KiroClientDependencies } from "./client"
 import { WEB_SEARCH_QUERY_MAX } from "./constants"
 import type { KiroSession } from "./session"
 import { redactKiroSecrets } from "./debug"
@@ -32,7 +32,7 @@ export async function invokeMcp(
   params?: unknown,
   dependencies: KiroClientDependencies = {},
 ): Promise<JsonRpcResult> {
-  const body: Record<string, unknown> = { jsonrpc: "2.0", id: "1", method }
+  const body: JsonRpcRequest = { jsonrpc: "2.0", id: "1", method }
   if (params !== undefined) body.params = params
 
   const res = await invokeMcpRequest(body, session, dependencies)

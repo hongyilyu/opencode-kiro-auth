@@ -4,7 +4,9 @@ import {
   EMPTY_TURN_ERROR_MESSAGE,
   OMITTED_REASONING_SENTINEL,
   completesAssistantTurn,
+  isContentFilteredStop,
   type KiroStreamEvent,
+  type MetadataEvent,
 } from "./events"
 
 export type AnthropicSseEvent = { event: string; data: Record<string, unknown> }
@@ -18,11 +20,20 @@ type OpenBlock =
   | { kind: "text" }
   | { kind: "thinking"; hasText: boolean }
 
+/** Kiro may deliver the name on any frame up to the stop frame, so it stays optional while pending. */
 type PendingTool = {
   id: string
   name?: string
   fragments: string[]
 }
+
+type StopDelta =
+  | { stop_reason: "end_turn" | "tool_use"; stop_sequence: null }
+  | {
+      stop_reason: "refusal"
+      stop_sequence: null
+      stop_details: { type: "refusal"; category?: string; explanation?: string }
+    }
 
 /** Encoder lifecycle: streaming, ended successfully, or ended with a terminal error frame. */
 type StreamState = "open" | "completed" | "errored"
@@ -40,6 +51,8 @@ export class AnthropicSseEncoder {
   // once their block was actually emitted — a discarded pending tool never completes the turn.
   private turnCompleted = false
   private contextPercent: number | null = null
+  /** Kiro's terminal metadata (last wins); only a refusal changes the emitted stop reason. */
+  private metadata: MetadataEvent | undefined
   private outputChars = 0
   private state: StreamState = "open"
   private discardedPendingTool = 0
@@ -64,6 +77,7 @@ export class AnthropicSseEncoder {
     discardedPendingTool: number
     droppedToolFragments: number
     unknownEventTypes: Record<string, number>
+    stopReason: string | null
   } {
     return {
       outputChars: this.outputChars,
@@ -72,6 +86,7 @@ export class AnthropicSseEncoder {
       discardedPendingTool: this.discardedPendingTool,
       droppedToolFragments: this.droppedToolFragments,
       unknownEventTypes: { ...this.unknownEventTypes },
+      stopReason: this.metadata?.stopReason ?? null,
     }
   }
 
@@ -111,6 +126,7 @@ export class AnthropicSseEncoder {
         this.contextPercent = event.percent
         return []
       case "metadata":
+        this.metadata = event
         return []
       case "unknown":
         this.unknownEventTypes[event.eventType] = (this.unknownEventTypes[event.eventType] ?? 0) + 1
@@ -144,16 +160,33 @@ export class AnthropicSseEncoder {
         event: "message_delta",
         data: {
           type: "message_delta",
-          delta: {
-            stop_reason: this.emittedToolBlock ? "tool_use" : "end_turn",
-            stop_sequence: null,
-          },
+          delta: this.stopDelta(),
           usage: { input_tokens: inputTokens, output_tokens: outputTokens },
         },
       },
       { event: "message_stop", data: { type: "message_stop" } },
     )
     return events
+  }
+
+  /**
+   * Refusal wins over tool_use. Otherwise the reason is derived from what was emitted, never
+   * from Kiro's END_TURN/TOOL_USE, so a discarded tool cannot report a tool stop.
+   */
+  private stopDelta(): StopDelta {
+    if (isContentFilteredStop(this.metadata)) {
+      const refusal = this.metadata.refusal
+      return {
+        stop_reason: "refusal",
+        stop_sequence: null,
+        stop_details: {
+          type: "refusal",
+          ...(refusal?.category ? { category: refusal.category } : {}),
+          ...(refusal?.explanation ? { explanation: refusal.explanation } : {}),
+        },
+      }
+    }
+    return { stop_reason: this.emittedToolBlock ? "tool_use" : "end_turn", stop_sequence: null }
   }
 
   private onText(event: Extract<KiroStreamEvent, { kind: "text" }>): AnthropicSseEvent[] {
@@ -260,7 +293,14 @@ export class AnthropicSseEncoder {
     if (event.input !== undefined) this.pendingTool.fragments.push(event.input)
     if (!event.stop) return []
 
+    // A call whose name never arrived is unrepresentable: discard it (counted) instead of
+    // emitting a nameless block the client would reject or record as a poisoned turn.
     const tool = this.pendingTool
+    const name = tool.name
+    if (!name) {
+      this.discardPendingTool()
+      return []
+    }
     this.pendingTool = undefined
     const events = this.closeBlock()
     this.index += 1
@@ -270,7 +310,7 @@ export class AnthropicSseEncoder {
         data: {
           type: "content_block_start",
           index: this.index,
-          content_block: { type: "tool_use", id: tool.id, name: tool.name, input: {} },
+          content_block: { type: "tool_use", id: tool.id, name, input: {} },
         },
       },
       {

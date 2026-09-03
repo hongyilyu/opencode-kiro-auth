@@ -14,6 +14,7 @@ import {
   KIRO_X_AMZ_USER_AGENT,
 } from "./constants"
 import { kiroDebug, kiroDebugError, type KiroDebugContext } from "./debug"
+import type { KiroRequestPayload } from "./request"
 import type { KiroSession } from "./session"
 
 /** Injectable transport for offline tests; defaults to globalThis.fetch. */
@@ -33,6 +34,19 @@ const MGMT_UA_HEADERS = {
   "x-amz-user-agent": KIRO_MGMT_USER_AGENT,
 }
 
+/** JSON-RPC 2.0 request body for Kiro's built-in MCP server (InvokeMCP). */
+export type JsonRpcRequest = {
+  jsonrpc: "2.0"
+  id: string
+  method: string
+  params?: unknown
+}
+
+/** The chat body actually sent: the typed payload plus the profile ARN when the session has one. */
+type ChatBody = KiroRequestPayload & { profileArn?: string }
+/** The InvokeMCP body: JSON-RPC plus the profile ARN, which both auth modes resolve. */
+type McpBody = JsonRpcRequest & { profileArn: string }
+
 type WireRequest = {
   url: string
   target: string
@@ -40,7 +54,9 @@ type WireRequest = {
   auth: Record<string, string>
   /** Operation-specific tail: UA pair, optout, SDK id headers. */
   headers: Record<string, string>
-  body: Record<string, unknown>
+  body: ChatBody | McpBody | Record<string, never>
+  /** Caller's abort signal, forwarded to fetch so a cancelled request stops upstream too. */
+  signal?: AbortSignal
 }
 
 /** The shared wire core: one awsJson1.0 POST, no policy. Every quirk lives with its operation. */
@@ -60,6 +76,7 @@ async function postKiro(
         ...request.headers,
       },
       body: JSON.stringify(request.body),
+      signal: request.signal,
     })
   } catch (error) {
     if (options.debug) kiroDebug(options.debug, "request.fetch_error", kiroDebugError(error))
@@ -69,6 +86,8 @@ async function postKiro(
 
 export type GenerateAssistantResponseOptions = KiroClientDependencies & {
   debug: KiroDebugContext
+  /** Per-request abort signal from the AI SDK (not a transport dependency). */
+  signal?: AbortSignal
 }
 
 /**
@@ -77,7 +96,7 @@ export type GenerateAssistantResponseOptions = KiroClientDependencies & {
  * when the session resolves one (OAuth); API-key sessions omit the field entirely.
  */
 export async function generateAssistantResponse(
-  payload: Record<string, unknown>,
+  payload: KiroRequestPayload,
   session: KiroSession,
   options: GenerateAssistantResponseOptions,
 ): Promise<Response> {
@@ -97,7 +116,8 @@ export async function generateAssistantResponse(
         "amz-sdk-invocation-id": options.debug.id,
         "amz-sdk-request": "attempt=1; max=3",
       },
-      body: profileArn ? { profileArn, ...payload } : payload,
+      body: profileArn ? ({ profileArn, ...payload } satisfies ChatBody) : payload,
+      signal: options.signal,
     },
     options,
   )
@@ -109,7 +129,7 @@ export async function generateAssistantResponse(
  * header — both auth modes resolve one.
  */
 export async function invokeMcpRequest(
-  rpcBody: Record<string, unknown>,
+  rpcBody: JsonRpcRequest,
   session: KiroSession,
   dependencies: KiroClientDependencies = {},
 ): Promise<Response> {

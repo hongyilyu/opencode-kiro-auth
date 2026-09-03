@@ -1,14 +1,8 @@
-import { createHash } from "node:crypto"
-import {
-  fetchApiKeyProfileArn,
-  isApiKeyCredential,
-  normalizeApiKey,
-  readApiKeyFromEnv,
-} from "./apikey"
-import { KiroAuthError, requireOAuthCredential, type KiroCredentialManager } from "./auth"
+import { isApiKeyCredential, normalizeApiKey } from "./apikey"
+import { KiroAuthError, type KiroCredentialManager } from "./auth"
 import type { KiroClientDependencies } from "./client"
 import { API_PROVIDER_ID } from "./constants"
-import { getProfileArn } from "./profile"
+import { getApiKeyProfileArn, getProfileArn } from "./profile"
 
 export type KiroSession = {
   authHeaders: () => Promise<Record<string, string>>
@@ -34,27 +28,8 @@ function createOAuthSession(
   }
 }
 
-const PROFILE_CACHE_LIMIT = 8
-const profileArnCaches = new WeakMap<typeof globalThis.fetch, Map<string, Promise<string>>>()
-
-function profileCache(fetcher: typeof globalThis.fetch): Map<string, Promise<string>> {
-  let cache = profileArnCaches.get(fetcher)
-  if (!cache) {
-    cache = new Map()
-    profileArnCaches.set(fetcher, cache)
-  }
-  return cache
-}
-
-function credentialDigest(value: string): string {
-  return createHash("sha256").update(value).digest("base64url")
-}
-
 export function createApiKeySession(key: string, dependencies: KiroClientDependencies = {}): KiroSession {
   const validated = normalizeApiKey(key)
-  const fetcher = dependencies.fetch ?? globalThis.fetch
-  const cache = profileCache(fetcher)
-  const cacheKey = credentialDigest(validated)
 
   return {
     async authHeaders() {
@@ -67,38 +42,24 @@ export function createApiKeySession(key: string, dependencies: KiroClientDepende
       return undefined
     },
     mcpProfileArn() {
-      const cached = cache.get(cacheKey)
-      if (cached) {
-        cache.delete(cacheKey)
-        cache.set(cacheKey, cached)
-        return cached
-      }
-
-      const pending = fetchApiKeyProfileArn(validated, { fetch: fetcher }).catch((error) => {
-        if (cache.get(cacheKey) === pending) cache.delete(cacheKey)
-        throw error
-      })
-      if (cache.size >= PROFILE_CACHE_LIMIT) cache.delete(cache.keys().next().value!)
-      cache.set(cacheKey, pending)
-      return pending
+      return getApiKeyProfileArn(validated, dependencies)
     },
   }
 }
 
-type SessionDependencies = KiroClientDependencies & {
-  readEnvKey?: () => string | undefined
-  mode?: "oauth" | "api"
-}
+/**
+ * What a session is built from. The discriminant is first-class: an OAuth session is backed by
+ * the refreshing credential manager (which reads and validates the store itself), an API-key
+ * session by the stored credential or, failing that, the key the host read from its environment.
+ * Pure over its inputs: the host adapter (plugin.ts) owns every environment read.
+ */
+export type SessionSpec =
+  | { mode: "oauth"; credentials: KiroCredentialManager }
+  | { mode: "api"; credential: unknown; envKey?: string }
 
-export function createSession(
-  credential: unknown,
-  credentials?: KiroCredentialManager,
-  dependencies: SessionDependencies = {},
-): KiroSession {
-  const mode = dependencies.mode ?? "oauth"
-  const readEnvKey = dependencies.readEnvKey ?? readApiKeyFromEnv
-
-  if (mode === "api") {
+export function createSession(spec: SessionSpec, dependencies: KiroClientDependencies = {}): KiroSession {
+  if (spec.mode === "api") {
+    const { credential } = spec
     if (isApiKeyCredential(credential)) return createApiKeySession(credential.key, dependencies)
     if (credential !== undefined) {
       throw new KiroAuthError(
@@ -106,7 +67,7 @@ export function createSession(
           `Run \`opencode auth login --provider ${API_PROVIDER_ID}\` again.`,
       )
     }
-    const envKey = readEnvKey()
+    const envKey = spec.envKey
     if (!envKey) {
       throw new KiroAuthError(
         `No credential found for ${API_PROVIDER_ID}. ` +
@@ -116,9 +77,7 @@ export function createSession(
     return apiKeySessionFromEnv(envKey, dependencies)
   }
 
-  requireOAuthCredential(credential)
-  if (!credentials) throw new KiroAuthError("Kiro OAuth credential manager is unavailable.")
-  return createOAuthSession(credentials, dependencies)
+  return createOAuthSession(spec.credentials, dependencies)
 }
 
 function apiKeySessionFromEnv(envKey: string, dependencies: KiroClientDependencies): KiroSession {

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test"
-import { toKiroPayload, type RequestDependencies } from "../src/request"
+import { toKiroPayload, type KiroPayloadOptions } from "../src/request"
 
 const GOLDEN_NOW = {
   toLocaleDateString: () => "Friday",
@@ -18,7 +18,7 @@ const IMAGE = (data: string) => ({
 })
 const BASH_TOOL = { name: "bash", description: "Run a command", input_schema: { type: "object" } }
 
-function dependencies(cwd = "/golden/cwd"): RequestDependencies {
+function dependencies(cwd = "/golden/cwd"): KiroPayloadOptions {
   let uuid = 0
   return {
     now: () => GOLDEN_NOW,
@@ -30,7 +30,7 @@ function dependencies(cwd = "/golden/cwd"): RequestDependencies {
 }
 
 function normalizedPayloadJson(body: any, effort?: string, cwd?: string): string {
-  return JSON.stringify(toKiroPayload(body, effort, undefined, dependencies(cwd)), null, 2)
+  return JSON.stringify(toKiroPayload(body, { effort, ...dependencies(cwd) }), null, 2)
 }
 
 describe("request payload golden corpus", () => {
@@ -176,6 +176,32 @@ describe("request payload golden corpus", () => {
                 type: "tool_result",
                 tool_use_id: "shot-1",
                 content: [{ type: "text", text: "latest" }, IMAGE("KEPT_TOOL_IMAGE")],
+              },
+            ],
+          },
+        ],
+      }),
+    ).toMatchSnapshot()
+  })
+
+  it("flattens a text-only array tool result", () => {
+    expect(
+      normalizedPayloadJson({
+        model: "claude-sonnet-4.6",
+        tools: [BASH_TOOL],
+        messages: [
+          { role: "user", content: "list files" },
+          {
+            role: "assistant",
+            content: [{ type: "tool_use", id: "tool-1", name: "bash", input: { command: "ls" } }],
+          },
+          {
+            role: "user",
+            content: [
+              {
+                type: "tool_result",
+                tool_use_id: "tool-1",
+                content: [{ type: "text", text: "a.ts" }, { type: "text", text: "b.ts" }],
               },
             ],
           },
