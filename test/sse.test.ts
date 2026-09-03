@@ -183,6 +183,184 @@ describe("AnthropicSseEncoder tool calls", () => {
     })
     expect(encoder.debugState().discardedPendingTool).toBe(1)
   })
+
+  it("discards a tool whose name never arrived, in single and multi-frame form", () => {
+    for (const events of [
+      [tool("nameless", { input: '{"command":"ls"}', stop: true })],
+      [
+        tool("nameless", { input: '{"command"', stop: false }),
+        tool("nameless", { input: ':"ls"}', stop: false }),
+        tool("nameless", { stop: true }),
+      ],
+    ]) {
+      const { encoder, frames } = encode(events)
+      expect(framesOfType(frames, "content_block_start")).toHaveLength(0)
+      expect(framesOfType(frames, "content_block_delta")).toHaveLength(0)
+      expect(framesOfType(frames, "message_stop")).toHaveLength(0)
+      expect(framesOfType(frames, "error")[0]?.data).toMatchObject({
+        error: { message: "Kiro closed the response stream without assistant output." },
+      })
+      expect(encoder.debugState().discardedPendingTool).toBe(1)
+      expect(encoder.debugState().usedTool).toBe(false)
+    }
+  })
+
+  it("emits a tool whose name arrives only on the stop frame", () => {
+    const { encoder, frames } = encode([
+      tool("late", { input: '{"command":"ls"}', stop: false }),
+      tool("late", { name: "bash", stop: true }),
+    ])
+    expect(framesOfType(frames, "content_block_start")[0]?.data).toMatchObject({
+      content_block: { type: "tool_use", id: "late", name: "bash" },
+    })
+    expect(framesOfType(frames, "content_block_delta")[0]?.data).toMatchObject({
+      delta: { type: "input_json_delta", partial_json: '{"command":"ls"}' },
+    })
+    expect(framesOfType(frames, "message_delta")[0]?.data).toMatchObject({
+      delta: { stop_reason: "tool_use" },
+    })
+    expect(framesOfType(frames, "message_stop")).toHaveLength(1)
+    expect(encoder.debugState().discardedPendingTool).toBe(0)
+  })
+
+  it("leaves an open text block alone when a nameless tool is discarded", () => {
+    const { encoder, frames } = encode([
+      { kind: "text", content: "hello" },
+      tool("nameless", { input: '{"command":"ls"}', stop: true }),
+      { kind: "text", content: " world" },
+    ])
+
+    const starts = framesOfType(frames, "content_block_start")
+    expect(starts).toHaveLength(1)
+    expect(starts[0]?.data).toMatchObject({ index: 0, content_block: { type: "text" } })
+    expect(
+      framesOfType(frames, "content_block_delta").map((frame) => frame.data.index),
+    ).toEqual([0, 0])
+    expect(
+      framesOfType(frames, "content_block_stop").map((frame) => frame.data.index),
+    ).toEqual([0])
+    expect(framesOfType(frames, "message_delta")[0]?.data).toMatchObject({
+      delta: { stop_reason: "end_turn" },
+    })
+    expect(framesOfType(frames, "message_stop")).toHaveLength(1)
+    expect(framesOfType(frames, "error")).toHaveLength(0)
+    expect(encoder.debugState().discardedPendingTool).toBe(1)
+    expect(encoder.debugState().usedTool).toBe(false)
+  })
+})
+
+describe("AnthropicSseEncoder stop reasons", () => {
+  const metadata = (
+    stopReason: string,
+    refusal?: { category?: string; explanation?: string },
+  ): KiroStreamEvent => ({
+    kind: "metadata",
+    stopReason,
+    ...(refusal ? { refusal } : {}),
+  })
+
+  function stopDelta(frames: AnthropicSseEvent[]): unknown {
+    const deltas = framesOfType(frames, "message_delta")
+    expect(deltas).toHaveLength(1)
+    return deltas[0]?.data.delta
+  }
+
+  it("reports a refusal with stop_details when Kiro filtered the content after text", () => {
+    const { frames } = encode([
+      { kind: "text", content: "I can help with" },
+      metadata("CONTENT_FILTERED", { category: "POLICY", explanation: "Not available." }),
+    ])
+    expect(stopDelta(frames)).toEqual({
+      stop_reason: "refusal",
+      stop_sequence: null,
+      stop_details: { type: "refusal", category: "POLICY", explanation: "Not available." },
+    })
+    expect(frames.map((frame) => frame.event).slice(-2)).toEqual(["message_delta", "message_stop"])
+    expect(framesOfType(frames, "error")).toHaveLength(0)
+  })
+
+  it("omits absent refusal details and matches the stop reason case-insensitively", () => {
+    const { frames } = encode([
+      { kind: "text", content: "partial" },
+      metadata("content_filtered"),
+    ])
+    expect(stopDelta(frames)).toEqual({
+      stop_reason: "refusal",
+      stop_sequence: null,
+      stop_details: { type: "refusal" },
+    })
+    expect(framesOfType(frames, "message_stop")).toHaveLength(1)
+  })
+
+  it("lets a refusal win over an emitted tool call", () => {
+    const { encoder, frames } = encode([
+      tool("call", { name: "bash", input: '{"command":"ls"}', stop: true }),
+      metadata("CONTENT_FILTERED", { category: "POLICY" }),
+    ])
+    expect(stopDelta(frames)).toEqual({
+      stop_reason: "refusal",
+      stop_sequence: null,
+      stop_details: { type: "refusal", category: "POLICY" },
+    })
+    expect(encoder.debugState().usedTool).toBe(true)
+  })
+
+  it("keeps the emission-derived reason under END_TURN and TOOL_USE metadata", () => {
+    const textUnderToolUse = encode([
+      { kind: "text", content: "done" },
+      metadata("TOOL_USE"),
+    ]).frames
+    expect(stopDelta(textUnderToolUse)).toEqual({ stop_reason: "end_turn", stop_sequence: null })
+
+    const toolUnderEndTurn = encode([
+      tool("call", { name: "bash", input: "{}", stop: true }),
+      metadata("END_TURN"),
+    ]).frames
+    expect(stopDelta(toolUnderEndTurn)).toEqual({ stop_reason: "tool_use", stop_sequence: null })
+
+    const discardedUnderToolUse = encode([
+      { kind: "text", content: "done" },
+      tool("nameless", { input: "{}", stop: true }),
+      metadata("TOOL_USE"),
+    ]).frames
+    expect(stopDelta(discardedUnderToolUse)).toEqual({
+      stop_reason: "end_turn",
+      stop_sequence: null,
+    })
+  })
+
+  it("still ends a reasoning-only stream in the empty-turn error when Kiro reports a refusal", () => {
+    const { encoder, frames } = encode([
+      { kind: "reasoning", text: "thinking" },
+      metadata("CONTENT_FILTERED", { category: "POLICY" }),
+    ])
+    expect(framesOfType(frames, "message_delta")).toHaveLength(0)
+    expect(framesOfType(frames, "message_stop")).toHaveLength(0)
+    expect(framesOfType(frames, "error")[0]?.data).toMatchObject({
+      error: { message: "Kiro closed the response stream without assistant output." },
+    })
+    expect(encoder.terminated).toBe(true)
+  })
+
+  it("reports the last recorded metadata stop reason in debug state", () => {
+    expect(new AnthropicSseEncoder(opts).debugState().stopReason).toBeNull()
+
+    const filteredLast = encode([
+      { kind: "text", content: "done" },
+      metadata("END_TURN"),
+      metadata("CONTENT_FILTERED"),
+    ])
+    expect(filteredLast.encoder.debugState().stopReason).toBe("CONTENT_FILTERED")
+    expect(stopDelta(filteredLast.frames)).toMatchObject({ stop_reason: "refusal" })
+
+    const endTurnLast = encode([
+      { kind: "text", content: "done" },
+      metadata("CONTENT_FILTERED"),
+      metadata("END_TURN"),
+    ])
+    expect(endTurnLast.encoder.debugState().stopReason).toBe("END_TURN")
+    expect(stopDelta(endTurnLast.frames)).toEqual({ stop_reason: "end_turn", stop_sequence: null })
+  })
 })
 
 describe("AnthropicSseEncoder transitions", () => {

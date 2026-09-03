@@ -1,5 +1,6 @@
 import type { Config, Hooks, PluginInput } from "@opencode-ai/plugin"
 import { API_PROVIDER_ID, PROVIDER_ID, DEFAULT_MODEL } from "./constants"
+import { readApiKeyFromEnv } from "./apikey"
 import {
   beginDeviceAuthorization,
   completeDeviceAuthorization,
@@ -7,6 +8,7 @@ import {
   KiroCredentialManager,
   normalizeRegion,
   normalizeStartUrl,
+  type AuthDependencies,
   type DeviceLogin,
   type OAuthCredential,
   type PendingDeviceAuthorization,
@@ -14,14 +16,18 @@ import {
 import { generateAssistantResponse, type KiroClientDependencies } from "./client"
 import { createSession, type KiroSession } from "./session"
 import { toKiroPayload } from "./request"
-import { anthropicErrorResponse, kiroResponseToAnthropic, mapKiroError } from "./response"
-import { resolveContextLimit } from "./limits"
+import { anthropicErrorResponse, kiroResponseToAnthropic } from "./response"
+import { resolveContextLimit, sdkData, sdkFailed } from "./limits"
 import { createTools, type KiroToolContext } from "./tools"
-import { createKiroDebugContext, kiroDebug, redactKiroSecrets } from "./debug"
-import { resolveRetryAfter } from "./events"
+import { createKiroDebugContext, kiroDebug } from "./debug"
 
 /** Internal header carrying a validated opencode variant to the fetch interceptor as Kiro effort. */
 const EFFORT_HEADER = "x-kiro-effort"
+
+type AuthMode = "oauth" | "api"
+
+/** Everything the plugin touches outside itself: transport and clock. Tests inject; production defaults. */
+export type KiroPluginDependencies = KiroClientDependencies & AuthDependencies
 
 type RuntimeModel = {
   id: string
@@ -66,8 +72,7 @@ async function providerForToolCall(input: PluginInput, context: KiroToolContext)
     path: { id: context.sessionID, messageID: context.messageID },
     query: { directory: context.directory },
   })
-  const body = (response as any)?.data ?? response
-  const info = body?.info
+  const info = (sdkData(response) as any)?.info
   const providerId = info?.providerID ?? info?.model?.providerID
   if (providerId !== PROVIDER_ID && providerId !== API_PROVIDER_ID) {
     throw new KiroAuthError("Kiro web_search could not determine the active Kiro provider.")
@@ -75,10 +80,10 @@ async function providerForToolCall(input: PluginInput, context: KiroToolContext)
   return providerId
 }
 
-function createKiroPlugin(providerId: string, mode: "oauth" | "api") {
+export function createKiroPlugin(providerId: string, mode: AuthMode, dependencies: KiroPluginDependencies = {}) {
   return async function plugin(input: PluginInput): Promise<Hooks> {
     if (mode === "api") {
-      sessionReaders(input).set(providerId, async () => createSession(undefined, undefined, { mode: "api" }))
+      sessionReaders(input).set(providerId, apiSessionReader(async () => undefined, dependencies))
     }
 
     const persistCredential = async (credential: OAuthCredential) => {
@@ -86,7 +91,7 @@ function createKiroPlugin(providerId: string, mode: "oauth" | "api") {
         path: { id: providerId },
         body: credential,
       })
-      if ((response as any)?.error) {
+      if (sdkFailed(response)) {
         throw new KiroAuthError("Kiro token refreshed, but OpenCode could not persist the new credential.")
       }
     }
@@ -99,7 +104,7 @@ function createKiroPlugin(providerId: string, mode: "oauth" | "api") {
       config: async (config) => {
         if (mode === "api") {
           mirrorProviderConfig(config, PROVIDER_ID, providerId)
-          installApiKeyEnvTransport(config, providerId, input)
+          installApiKeyEnvTransport(config, providerId, input, dependencies)
         }
       },
       "chat.headers": async (ctx, output) => {
@@ -126,7 +131,7 @@ function createKiroPlugin(providerId: string, mode: "oauth" | "api") {
                 {
                   type: "oauth" as const,
                   label: "AWS Builder ID (device flow)",
-                  authorize: async () => deviceAuthorization({ authMethod: "builder-id" }),
+                  authorize: async () => deviceAuthorization({ authMethod: "builder-id" }, dependencies),
                 },
                 {
                   type: "oauth" as const,
@@ -148,21 +153,22 @@ function createKiroPlugin(providerId: string, mode: "oauth" | "api") {
                     },
                   ],
                   authorize: async (values: Record<string, string> = {}) =>
-                    deviceAuthorization({
-                      authMethod: "idc",
-                      startUrl: values.startUrl ?? "",
-                      region: values.region ?? "",
-                    }),
+                    deviceAuthorization(
+                      { authMethod: "idc", startUrl: values.startUrl ?? "", region: values.region ?? "" },
+                      dependencies,
+                    ),
                 },
               ],
         loader: async (readCredential) => {
-          const credentials = new KiroCredentialManager(readCredential, persistCredential)
-          sessionReaders(input).set(providerId, async () =>
-            createSession(await readCredential(), credentials, { mode }),
+          sessionReaders(input).set(
+            providerId,
+            mode === "api"
+              ? apiSessionReader(readCredential, dependencies)
+              : oauthSessionReader(readCredential, persistCredential, dependencies),
           )
           return {
             apiKey: "",
-            fetch: createKiroFetch(providerId, mode, input, () => readSession(input, providerId)),
+            fetch: createKiroFetch(providerId, input, () => readSession(input, providerId), dependencies),
           }
         },
       },
@@ -170,25 +176,50 @@ function createKiroPlugin(providerId: string, mode: "oauth" | "api") {
   }
 }
 
-function installApiKeyEnvTransport(config: Config, providerId: string, input: PluginInput): void {
+/** The environment fallback is read here, per request, so session.ts stays pure over its inputs. */
+function apiSessionReader(readCredential: () => Promise<unknown>, dependencies: KiroPluginDependencies): SessionReader {
+  return async () =>
+    createSession({ mode: "api", credential: await readCredential(), envKey: readApiKeyFromEnv() }, dependencies)
+}
+
+/** One credential manager per loader, so its held credential survives across requests. */
+function oauthSessionReader(
+  readCredential: () => Promise<unknown>,
+  persistCredential: (credential: OAuthCredential) => Promise<void>,
+  dependencies: KiroPluginDependencies,
+): SessionReader {
+  const credentials = new KiroCredentialManager(readCredential, persistCredential, dependencies)
+  return async () => createSession({ mode: "oauth", credentials }, dependencies)
+}
+
+function installApiKeyEnvTransport(
+  config: Config,
+  providerId: string,
+  input: PluginInput,
+  dependencies: KiroPluginDependencies,
+): void {
   const provider = config.provider?.[providerId] as Record<string, any> | undefined
   if (!provider) return
   const options = { ...(provider.options ?? {}) }
   if (options.apiKey === undefined) options.apiKey = ""
   if (!options.fetch) {
-    options.fetch = createKiroFetch(providerId, "api", input, () => readSession(input, providerId))
+    options.fetch = createKiroFetch(providerId, input, () => readSession(input, providerId), dependencies)
   }
   provider.options = options
 }
 
+/**
+ * The intercepting fetch opencode's Anthropic provider calls. Maps the Anthropic request to Kiro,
+ * sends it, and hands every upstream Response to the single response seam.
+ */
 export function createKiroFetch(
   providerId: string,
-  mode: "oauth" | "api",
   input: PluginInput,
   getSession: SessionReader,
   dependencies: KiroClientDependencies = {},
 ) {
   return async function kiroFetch(_input: Parameters<typeof fetch>[0], init?: RequestInit) {
+    init?.signal?.throwIfAborted()
     const debug = createKiroDebugContext()
     let body: Record<string, any> = {}
     if (typeof init?.body === "string" && init.body.length > 0) {
@@ -207,7 +238,7 @@ export function createKiroFetch(
     const effort = new Headers(init?.headers).get(EFFORT_HEADER) ?? undefined
     kiroDebug(debug, "request.received", {
       provider: providerId,
-      authMode: mode,
+      authMode: providerId === API_PROVIDER_ID ? "api" : "oauth",
       model,
       effort: effort ?? null,
       anthropicRequestBytes: typeof init?.body === "string" ? Buffer.byteLength(init.body) : 0,
@@ -215,37 +246,20 @@ export function createKiroFetch(
       toolCount: Array.isArray(body.tools) ? body.tools.length : 0,
     })
 
-    const payload = toKiroPayload(body, effort, debug)
+    const signal = init?.signal ?? undefined
+    const payload = toKiroPayload(body, { effort, debug })
     const active = await getSession()
-    const response = await generateAssistantResponse(payload, active, { debug, ...dependencies })
+    const response = await generateAssistantResponse(payload, active, { debug, signal, ...dependencies })
     kiroDebug(debug, "response.received", {
       status: response.status,
       statusText: response.statusText,
       headers: responseDebugHeaders(response.headers),
     })
 
-    if (!response.ok) {
-      const detail = redactKiroSecrets(await response.text().catch(() => ""))
-      const mapped = mapKiroError(detail, response.status)
-      kiroDebug(debug, "response.http_error", {
-        upstreamStatus: response.status,
-        mappedStatus: mapped.status,
-        bodyBytes: Buffer.byteLength(detail),
-        error: responseErrorShape(detail),
-      })
-      const headers = new Headers({ "content-type": "application/json" })
-      const retryAfter =
-        mapped.status === 429
-          ? resolveRetryAfter({ header: response.headers.get("retry-after") })
-          : response.headers.get("retry-after")
-      if (retryAfter) headers.set("retry-after", retryAfter)
-      return new Response(mapped.body, { status: mapped.status, headers })
-    }
-
-    // Resolution never throws and is memoized per client, provider, and model. Doing it eagerly
-    // costs one cached lookup on error paths and keeps response conversion behind one call.
+    // Resolution never throws and is memoized per client and provider. Doing it eagerly costs
+    // one cached lookup on error paths and keeps every response behind one call (D6).
     const contextLimit = await resolveContextLimit(input.client, providerId, model)
-    return kiroResponseToAnthropic(response, { model, contextLimit, debug })
+    return kiroResponseToAnthropic(response, { model, contextLimit, debug, signal })
   }
 }
 
@@ -296,21 +310,6 @@ function responseDebugHeaders(headers: Headers): Record<string, string> {
   return Object.fromEntries(selected.flatMap((name) => (headers.has(name) ? [[name, headers.get(name) ?? ""]] : [])))
 }
 
-function responseErrorShape(detail: string): Record<string, unknown> {
-  try {
-    const value = JSON.parse(detail) as Record<string, unknown>
-    return {
-      keys: Object.keys(value).sort(),
-      reason: typeof value.reason === "string" ? value.reason : undefined,
-      type: typeof value.type === "string" ? value.type : undefined,
-      message:
-        typeof value.message === "string" ? redactKiroSecrets(value.message.slice(0, 500)) : undefined,
-    }
-  } catch {
-    return { parseable: false }
-  }
-}
-
 function validationMessage(normalize: (value: string) => string): (value: string) => string | undefined {
   return (value) => {
     try {
@@ -322,19 +321,19 @@ function validationMessage(normalize: (value: string) => string): (value: string
   }
 }
 
-async function deviceAuthorization(login: DeviceLogin) {
-  const pending = await beginDeviceAuthorization(login)
-  return deviceAuthorizationResult(pending)
+async function deviceAuthorization(login: DeviceLogin, dependencies: AuthDependencies) {
+  const pending = await beginDeviceAuthorization(login, dependencies)
+  return deviceAuthorizationResult(pending, dependencies)
 }
 
-function deviceAuthorizationResult(pending: PendingDeviceAuthorization) {
+function deviceAuthorizationResult(pending: PendingDeviceAuthorization, dependencies: AuthDependencies) {
   const expiresInMinutes = Math.max(1, Math.ceil((pending.expiresAt - Date.now()) / 60_000))
   return {
     url: pending.verificationUriComplete ?? pending.verificationUri,
     instructions: `Enter code ${pending.userCode} and approve access. The code expires in ${expiresInMinutes} minutes.`,
     method: "auto" as const,
     callback: async () => {
-      const credential = await completeDeviceAuthorization(pending)
+      const credential = await completeDeviceAuthorization(pending, dependencies)
       return {
         type: "success" as const,
         access: credential.access,

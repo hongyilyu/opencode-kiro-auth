@@ -1,27 +1,16 @@
 import { describe, expect, it } from "bun:test"
-import type { PluginInput } from "@opencode-ai/plugin"
 import { fetchApiKeyProfileArn } from "../src/apikey"
 import { KIRO_PROFILE_ARN_PLACEHOLDER, WEB_SEARCH_QUERY_MAX } from "../src/constants"
 import { createKiroFetch } from "../src/plugin"
 import { getProfileArn } from "../src/profile"
 import { webSearch } from "../src/mcp"
-import type { KiroSession } from "../src/session"
 import { createTools } from "../src/tools"
 import { chunkedResponse, encodeKiroEvent } from "./support/eventstream-fixtures"
+import { scriptedFetch } from "./support/http-fixtures"
+import { isolateEnv } from "./support/isolation"
+import { FAKE_PROFILE_ARN as PROFILE_ARN, fakePluginInput, fakeSession } from "./support/plugin-fixtures"
 
-const PROFILE_ARN = "arn:aws:codewhisperer:us-east-1:111122223333:profile/SEAMTEST"
-
-const session: KiroSession = {
-  async authHeaders() {
-    return { authorization: "Bearer seam-token" }
-  },
-  async chatProfileArn() {
-    return PROFILE_ARN
-  },
-  async mcpProfileArn() {
-    return PROFILE_ARN
-  },
-}
+const session = fakeSession({ token: "seam-token" })
 
 describe("injected Kiro client seams", () => {
   it("returns a redacted Anthropic 400 for a non-object request body", async () => {
@@ -30,13 +19,7 @@ describe("injected Kiro client seams", () => {
       fetchCalls++
       throw new Error("upstream must not be called")
     }) as unknown as typeof globalThis.fetch
-    const kiroFetch = createKiroFetch(
-      "kiro",
-      "oauth",
-      { client: {} } as unknown as PluginInput,
-      async () => session,
-      { fetch: fetcher },
-    )
+    const kiroFetch = createKiroFetch("kiro", fakePluginInput(), async () => session, { fetch: fetcher })
 
     // Truncated JSON, and valid JSON whose top level is not an object.
     for (const body of ['{"secret":"ksk_must_not_leak"', "null", "[1,2]", '"text"']) {
@@ -71,23 +54,8 @@ describe("injected Kiro client seams", () => {
       expect(JSON.parse(String(init?.body)).profileArn).toBe(PROFILE_ARN)
       return chunkedResponse(encodeKiroEvent("assistantResponseEvent", { content: "offline reply" }))
     }) as unknown as typeof globalThis.fetch
-    const input = {
-      client: {
-        config: {
-          providers: async () => ({
-            data: {
-              providers: [
-                {
-                  id: "kiro",
-                  models: { "claude-sonnet-4.6": { limit: { context: 200_000 } } },
-                },
-              ],
-            },
-          }),
-        },
-      },
-    } as unknown as PluginInput
-    const kiroFetch = createKiroFetch("kiro", "oauth", input, async () => session, { fetch: fetcher })
+    const input = fakePluginInput({ models: { "claude-sonnet-4.6": 200_000 } })
+    const kiroFetch = createKiroFetch("kiro", input, async () => session, { fetch: fetcher })
 
     const response = await kiroFetch("https://api.anthropic.com/v1/messages", {
       method: "POST",
@@ -102,6 +70,41 @@ describe("injected Kiro client seams", () => {
     expect(fetchCalls).toBe(1)
     expect(sse).toContain('"type":"text_delta","text":"offline reply"')
     expect(sse).toContain('"type":"message_stop"')
+  })
+
+  it("rejects an already-aborted request before touching the session or upstream", async () => {
+    let sessionReads = 0
+    const upstream = scriptedFetch(() =>
+      chunkedResponse(encodeKiroEvent("assistantResponseEvent", { content: "never" })),
+    )
+    const kiroFetch = createKiroFetch(
+      "kiro",
+      fakePluginInput(),
+      async () => {
+        sessionReads++
+        return session
+      },
+      { fetch: upstream.fetch },
+    )
+    const reason = new Error("client went away")
+    const controller = new AbortController()
+    controller.abort(reason)
+
+    const outcome = await kiroFetch("https://api.anthropic.com/v1/messages", {
+      method: "POST",
+      body: JSON.stringify({
+        model: "claude-sonnet-4.6",
+        messages: [{ role: "user", content: "cancelled before send" }],
+      }),
+      signal: controller.signal,
+    }).then(
+      () => "resolved",
+      (error: unknown) => error,
+    )
+
+    expect(outcome).toBe(reason)
+    expect(sessionReads).toBe(0)
+    expect(upstream.calls).toHaveLength(0)
   })
 
   it("runs web_search end to end without network access", async () => {
@@ -160,6 +163,123 @@ describe("injected Kiro client seams", () => {
 
     expect(results).toEqual([])
     expect(rpcBody?.params?.arguments?.query).toBe("q".repeat(WEB_SEARCH_QUERY_MAX))
+  })
+})
+
+describe("HTTP errors through createKiroFetch", () => {
+  isolateEnv("KIRO_RATE_LIMIT_RETRY_SECONDS")
+
+  const CHAT_BODY = JSON.stringify({
+    model: "claude-sonnet-4.6",
+    messages: [{ role: "user", content: "trigger an upstream error" }],
+  })
+
+  /** A chat call whose upstream answers with one fixed HTTP error; counts upstream calls. */
+  async function chatAgainst(upstream: Response): Promise<{ response: Response; fetchCalls: number }> {
+    const { fetch, calls } = scriptedFetch(upstream)
+    const kiroFetch = createKiroFetch("kiro", fakePluginInput(), async () => session, { fetch })
+    const response = await kiroFetch("https://api.anthropic.com/v1/messages", { method: "POST", body: CHAT_BODY })
+    return { response, fetchCalls: calls.length }
+  }
+
+  it("forwards the upstream retry-after on a 429", async () => {
+    delete process.env.KIRO_RATE_LIMIT_RETRY_SECONDS
+    const { response, fetchCalls } = await chatAgainst(
+      new Response(JSON.stringify({ message: "Too many requests" }), {
+        status: 429,
+        headers: { "retry-after": "17" },
+      }),
+    )
+
+    expect(fetchCalls).toBe(1)
+    expect(response.status).toBe(429)
+    expect(response.headers.get("content-type")).toBe("application/json")
+    expect(response.headers.get("retry-after")).toBe("17")
+    expect(await response.json()).toEqual({ message: "Too many requests" })
+  })
+
+  it("lets KIRO_RATE_LIMIT_RETRY_SECONDS override the upstream retry-after on a 429", async () => {
+    process.env.KIRO_RATE_LIMIT_RETRY_SECONDS = "45"
+    const { response, fetchCalls } = await chatAgainst(
+      new Response(JSON.stringify({ message: "Too many requests" }), {
+        status: 429,
+        headers: { "retry-after": "17" },
+      }),
+    )
+
+    expect(fetchCalls).toBe(1)
+    expect(response.status).toBe(429)
+    expect(response.headers.get("content-type")).toBe("application/json")
+    expect(response.headers.get("retry-after")).toBe("45")
+  })
+
+  it("forwards a 503 retry-after verbatim even when KIRO_RATE_LIMIT_RETRY_SECONDS is set", async () => {
+    process.env.KIRO_RATE_LIMIT_RETRY_SECONDS = "45"
+    const { response, fetchCalls } = await chatAgainst(
+      new Response(JSON.stringify({ message: "Service unavailable" }), {
+        status: 503,
+        headers: { "retry-after": "9" },
+      }),
+    )
+
+    expect(fetchCalls).toBe(1)
+    expect(response.status).toBe(503)
+    expect(response.headers.get("content-type")).toBe("application/json")
+    expect(response.headers.get("retry-after")).toBe("9")
+    expect(await response.json()).toEqual({ message: "Service unavailable" })
+  })
+
+  it("redacts an API key in a passthrough error body exactly once", async () => {
+    const { response, fetchCalls } = await chatAgainst(
+      new Response(JSON.stringify({ message: "rejected credential ksk_leakedsecret123" }), { status: 403 }),
+    )
+    const text = await response.text()
+
+    expect(fetchCalls).toBe(1)
+    expect(response.status).toBe(403)
+    expect(response.headers.get("content-type")).toBe("application/json")
+    expect(text).toBe(JSON.stringify({ message: "rejected credential ksk_<redacted>" }))
+    expect(text.split("ksk_").length - 1).toBe(1)
+  })
+
+  it("passes a non-JSON error body through verbatim with a JSON content-type", async () => {
+    const { response, fetchCalls } = await chatAgainst(new Response("boom", { status: 500 }))
+
+    expect(fetchCalls).toBe(1)
+    expect(response.status).toBe(500)
+    expect(response.headers.get("content-type")).toBe("application/json")
+    expect(await response.text()).toBe("boom")
+  })
+
+  it("maps an empty error body to a generic failure message", async () => {
+    const { response, fetchCalls } = await chatAgainst(new Response("", { status: 503 }))
+
+    expect(fetchCalls).toBe(1)
+    expect(response.status).toBe(503)
+    expect(response.headers.get("content-type")).toBe("application/json")
+    expect(await response.text()).toBe("Kiro request failed (503)")
+  })
+
+  it("reshapes CONTENT_LENGTH_EXCEEDS_THRESHOLD into a prompt-too-long error", async () => {
+    const { response, fetchCalls } = await chatAgainst(
+      new Response(
+        JSON.stringify({
+          __type: "ValidationException",
+          message: "Input content length exceeds threshold",
+          reason: "CONTENT_LENGTH_EXCEEDS_THRESHOLD",
+        }),
+        { status: 400 },
+      ),
+    )
+    const error = (await response.json()) as any
+
+    expect(fetchCalls).toBe(1)
+    expect(response.status).toBe(400)
+    expect(response.headers.get("content-type")).toBe("application/json")
+    expect(error.type).toBe("error")
+    expect(error.error.type).toBe("invalid_request_error")
+    expect(error.error.message).toMatch(/prompt is too long/i)
+    expect(error.error.message).not.toContain("CONTENT_LENGTH_EXCEEDS_THRESHOLD")
   })
 })
 

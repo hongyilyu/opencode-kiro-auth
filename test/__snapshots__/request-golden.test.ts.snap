@@ -436,7 +436,10 @@ exports[`request payload golden corpus trims images across the retention boundar
                 "toolUseId": "shot-1",
                 "content": [
                   {
-                    "text": "[{\\"type\\":\\"text\\",\\"text\\":\\"old\\"},{\\"type\\":\\"text\\",\\"text\\":\\"[image omitted]\\"}]"
+                    "text": "old"
+                  },
+                  {
+                    "text": "[image omitted]"
                   }
                 ],
                 "status": "success"
@@ -478,7 +481,10 @@ exports[`request payload golden corpus preserves a tool-result image inside the 
               "toolUseId": "shot-1",
               "content": [
                 {
-                  "text": "[{\\"type\\":\\"text\\",\\"text\\":\\"latest\\"},{\\"type\\":\\"image\\",\\"source\\":{\\"type\\":\\"base64\\",\\"media_type\\":\\"image/png\\",\\"data\\":\\"KEPT_TOOL_IMAGE\\"}}]"
+                  "text": "latest"
+                },
+                {
+                  "text": "[image 1 attached]"
                 }
               ],
               "status": "success"
@@ -499,7 +505,15 @@ exports[`request payload golden corpus preserves a tool-result image inside the 
           ]
         },
         "origin": "KIRO_CLI",
-        "modelId": "claude-sonnet-4.6"
+        "modelId": "claude-sonnet-4.6",
+        "images": [
+          {
+            "format": "png",
+            "source": {
+              "bytes": "KEPT_TOOL_IMAGE"
+            }
+          }
+        ]
       }
     },
     "history": [
@@ -526,6 +540,88 @@ exports[`request payload golden corpus preserves a tool-result image inside the 
               "name": "bash",
               "input": {
                 "command": "screenshot"
+              }
+            }
+          ]
+        }
+      }
+    ],
+    "chatTriggerType": "MANUAL",
+    "agentContinuationId": "00000000-0000-4000-8000-000000000002",
+    "agentTaskType": "vibe"
+  }
+}"
+`;
+
+exports[`request payload golden corpus flattens a text-only array tool result 1`] = `
+"{
+  "conversationState": {
+    "conversationId": "00000000-0000-4000-8000-000000000001",
+    "currentMessage": {
+      "userInputMessage": {
+        "content": "",
+        "userInputMessageContext": {
+          "envState": {
+            "operatingSystem": "linux",
+            "currentWorkingDirectory": "/golden/cwd",
+            "environmentVariables": []
+          },
+          "toolResults": [
+            {
+              "toolUseId": "tool-1",
+              "content": [
+                {
+                  "text": "a.ts"
+                },
+                {
+                  "text": "b.ts"
+                }
+              ],
+              "status": "success"
+            }
+          ],
+          "tools": [
+            {
+              "toolSpecification": {
+                "name": "bash",
+                "description": "Run a command",
+                "inputSchema": {
+                  "json": {
+                    "type": "object"
+                  }
+                }
+              }
+            }
+          ]
+        },
+        "origin": "KIRO_CLI",
+        "modelId": "claude-sonnet-4.6"
+      }
+    },
+    "history": [
+      {
+        "userInputMessage": {
+          "content": "list files",
+          "userInputMessageContext": {
+            "envState": {
+              "operatingSystem": "linux",
+              "currentWorkingDirectory": "/golden/cwd",
+              "environmentVariables": []
+            }
+          },
+          "origin": "KIRO_CLI",
+          "modelId": "claude-sonnet-4.6"
+        }
+      },
+      {
+        "assistantResponseMessage": {
+          "content": "",
+          "toolUses": [
+            {
+              "toolUseId": "tool-1",
+              "name": "bash",
+              "input": {
+                "command": "ls"
               }
             }
           ]

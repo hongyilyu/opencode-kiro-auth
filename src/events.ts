@@ -93,7 +93,7 @@ export function parseKiroEvent(event: KiroEvent): KiroStreamEvent {
           ...(retryAfter !== undefined ? { retryAfterSeconds: retryAfter } : {}),
         }
       }
-      if (/timeout|timed out/.test(detail)) {
+      if (looksLikeTimeout(detail)) {
         return { kind: "timeout", message }
       }
       return { kind: "streamError", message }
@@ -186,12 +186,27 @@ export function parseKiroEvent(event: KiroEvent): KiroStreamEvent {
   }
 }
 
+/** The one wording heuristic for "this failure was a timeout", shared by in-band and transport errors (D4). */
+export function looksLikeTimeout(text: string): boolean {
+  return /timeout|timed out/i.test(text)
+}
+
 /**
  * The empty-turn error message is a cross-layer contract: the SSE encoder emits it at EOF when
  * nothing completed the turn, and preflight returns it as the 502 body for empty streams. opencode
  * retries on it instead of recording a contentless assistant turn.
  */
 export const EMPTY_TURN_ERROR_MESSAGE = "Kiro closed the response stream without assistant output."
+
+export type MetadataEvent = Extract<KiroStreamEvent, { kind: "metadata" }>
+
+/**
+ * Kiro's refusal stop, compared case-insensitively. Shared by preflight (pre-output -> 400) and
+ * the SSE encoder (post-output -> `stop_reason: "refusal"`) so the two cannot drift.
+ */
+export function isContentFilteredStop(event: MetadataEvent | undefined): event is MetadataEvent {
+  return event?.stopReason?.toUpperCase() === "CONTENT_FILTERED"
+}
 
 /** Whether preflight can safely release the stream without hiding visible model progress. */
 export function beginsAssistantOutput(event: KiroStreamEvent): boolean {
